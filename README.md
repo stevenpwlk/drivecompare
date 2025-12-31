@@ -69,6 +69,39 @@ Où récupérer les artefacts (volume `/logs`) :
 
 Le store Leclerc est configurable via `LECLERC_STORE_URL` (ex: autre drive en changeant l'URL dans `.env`).
 
+## Leclerc: protection anti-bot (DataDome)
+
+Leclerc peut renvoyer une page de blocage DataDome (`Access blocked` / `captcha-delivery.com`).
+Dans ce cas, la recherche échoue en `FAILED` avec la raison `DATADOME_BLOCKED` et des artefacts sont générés:
+
+- `/logs/leclerc_blocked_*.html`
+- `/logs/leclerc_blocked_*.png`
+
+### Bootstrap session (assisté)
+
+Le worker reste en mode headless pour les recherches quotidiennes. Pour créer une session valide:
+
+```bash
+docker compose run --rm worker python /app/worker/tools/leclerc_bootstrap.py --account bot
+```
+
+Le script ouvre une fenêtre Playwright (non headless). Réalisez les actions nécessaires
+(captcha/choix magasin/login), puis appuyez sur Entrée dans la console. Le fichier
+`/sessions/leclerc_bot.json` est alors sauvegardé.
+
+### Limitations headless / Docker
+
+Si `headless=False` ne peut pas s'afficher dans le conteneur:
+
+1. Exécutez le bootstrap sur une machine avec interface graphique (PC local).
+2. Copiez le fichier `sessions/leclerc_bot.json` vers le serveur (volume `/sessions`).
+
+Si vous mettez en place un accès X11/VNC/noVNC, vous pouvez aussi lancer le bootstrap depuis Docker.
+
+### Validité
+
+Si Leclerc rebloque l'accès, relancez simplement le bootstrap pour régénérer la session.
+
 ## How to test manually
 
 1. Démarrez les services avec `docker compose up --build`.

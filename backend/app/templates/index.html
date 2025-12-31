@@ -101,15 +101,25 @@
         jobResults.innerHTML = items || '<div class="muted">Aucun résultat côté Leclerc.</div>';
       } else if (job.status === 'FAILED') {
         const debug = job.result?.debug || {};
+        const reason = job.result?.reason || job.error || '';
         const details = [
           debug.network_log ? `Network: ${debug.network_log}` : null,
+          debug.blocked_png ? `Screenshot: ${debug.blocked_png}` : null,
+          debug.blocked_html ? `HTML: ${debug.blocked_html}` : null,
           debug.error_png ? `Screenshot: ${debug.error_png}` : null,
           debug.error_html ? `HTML: ${debug.error_html}` : null,
         ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
-        jobResults.innerHTML = `
-          <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
-          ${details ? `<div class="muted">${details}</div>` : ''}
-        `;
+        if (reason === 'DATADOME_BLOCKED') {
+          jobResults.innerHTML = `
+            <div class="muted">Leclerc a bloqué l'accès automatique (DataDome). Lancez le bootstrap session.</div>
+            ${details ? `<div class="muted">${details}</div>` : ''}
+          `;
+        } else {
+          jobResults.innerHTML = `
+            <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
+            ${details ? `<div class="muted">${details}</div>` : ''}
+          `;
+        }
       } else {
         jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
       }
