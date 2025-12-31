@@ -51,11 +51,21 @@ docker compose up --build
 - Le worker utilise Playwright headless, avec des stubs pour les retailers.
 - Les erreurs Playwright génèrent une capture d’écran + trace dans `/logs`.
 - Les comptes bots/main sont gérés via `.env` (aucun secret dans le code).
+- Leclerc nécessite un `LECLERC_STORE_URL` pointant vers le drive cible (par défaut Seclin Lorival).
 
 ## Debug Leclerc
 
 - Les captures réseau XHR/Fetch sont écrites dans `/logs/leclerc_network_*.jsonl`.
 - En cas d'erreur, les fichiers `/logs/leclerc_error_*.png` et `/logs/leclerc_error_*.html` contiennent la capture d'écran et le HTML de la page.
+- Le store Leclerc est configurable via `LECLERC_STORE_URL` (ex: autre drive en changeant l'URL dans `.env`).
+
+## How to test manually
+
+1. Démarrez les services avec `docker compose up --build`.
+2. Ouvrez l'UI: `http://<IP>:8000`.
+3. Lancez une recherche Leclerc (ex: "coca 1.5L").
+4. Vérifiez que le job passe en SUCCESS et qu'au moins un produit est listé.
+5. En cas d'échec, inspectez les artefacts Playwright dans `./logs` (captures et HTML).
 
 ## Test POC Leclerc
 
