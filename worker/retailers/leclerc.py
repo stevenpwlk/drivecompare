@@ -23,6 +23,21 @@ LECLERC_STORE_URL = os.getenv(
 )
 
 
+def is_datadome_block(page_html: str) -> bool:
+    return (
+        "captcha-delivery.com" in page_html
+        or "DataDome" in page_html
+        or "Access blocked" in page_html
+    )
+
+
+class LeclercBlocked(RuntimeError):
+    def __init__(self, reason: str, artifacts: dict[str, str]) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.artifacts = artifacts
+
+
 def remove_listener_safe(emitter: Any, event_name: str, handler: Any) -> None:
     remover = getattr(emitter, "remove_listener", None)
     if callable(remover):
@@ -112,6 +127,21 @@ class LeclercRetailer:
         if trace_path:
             payload["trace_zip"] = str(trace_path)
         return payload
+
+    def _capture_blocked_artifacts(self, page_html: str) -> dict[str, str]:
+        self._ensure_dirs()
+        timestamp = self._timestamp()
+        screenshot_path = self.log_dir / f"leclerc_blocked_{timestamp}.png"
+        html_path = self.log_dir / f"leclerc_blocked_{timestamp}.html"
+        try:
+            self.page.screenshot(path=str(screenshot_path), full_page=True)
+        except Exception:
+            self.logger.exception("Failed to capture Leclerc blocked screenshot")
+        try:
+            html_path.write_text(page_html, encoding="utf-8")
+        except Exception:
+            self.logger.exception("Failed to capture Leclerc blocked HTML")
+        return {"blocked_png": str(screenshot_path), "blocked_html": str(html_path)}
 
     @contextmanager
     def _network_capture(self, metadata: dict[str, Any] | None = None) -> Iterator[Path]:
@@ -462,6 +492,11 @@ class LeclercRetailer:
                         self.page.wait_for_load_state("networkidle", timeout=4000)
                     except Exception:
                         self.page.wait_for_timeout(1000)
+                    html = self.page.content()
+                    if is_datadome_block(html):
+                        blocked_paths = self._capture_blocked_artifacts(html)
+                        blocked_paths["network_log"] = str(network_log)
+                        raise LeclercBlocked("DATADOME_BLOCKED", blocked_paths)
                     used_input = self._search_with_input(query)
                     if not used_input:
                         search_url = build_search_url(query, store_url)
@@ -471,6 +506,11 @@ class LeclercRetailer:
                             wait_until="domcontentloaded",
                         )
                     self._handle_cookie_banner()
+                    html = self.page.content()
+                    if is_datadome_block(html):
+                        blocked_paths = self._capture_blocked_artifacts(html)
+                        blocked_paths["network_log"] = str(network_log)
+                        raise LeclercBlocked("DATADOME_BLOCKED", blocked_paths)
                     try:
                         parsed = urlparse(store_url)
                         base_url = (
@@ -525,6 +565,8 @@ class LeclercRetailer:
                             "page_title": page_title,
                         },
                     }
+                except LeclercBlocked:
+                    raise
                 except Exception as error:
                     error_paths = self._capture_error_artifacts("search", error)
                     try:

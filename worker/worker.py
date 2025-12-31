@@ -160,6 +160,14 @@ def handle_retailer_search(job):
                 sessions_dir=SESSIONS_DIR,
             )
             result = retailer.search(query, account_type=account_type, limit=limit)
+        except leclerc.LeclercBlocked as error:
+            logging.warning("Leclerc blocked: %s", error.reason)
+            result = {
+                "items": [],
+                "reason": error.reason,
+                "debug": error.artifacts,
+            }
+            error_message = error.reason
         except Exception as error:
             logging.exception("Leclerc search failed")
             error_message = str(error)
