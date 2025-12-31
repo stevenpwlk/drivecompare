@@ -1,0 +1,206 @@
+import json
+from typing import Any
+
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from .db import fetch_all, fetch_one, insert_job, execute
+
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
+templates = Jinja2Templates(directory="backend/app/templates")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    baskets = fetch_all(
+        """
+        SELECT b.id, b.name, b.created_at, COUNT(bi.id) AS item_count
+        FROM baskets b
+        LEFT JOIN basket_items bi ON bi.basket_id = b.id
+        GROUP BY b.id
+        ORDER BY b.created_at DESC
+        """
+    )
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "baskets": baskets,
+        },
+    )
+
+
+@app.get("/products/search")
+def search_products(q: str = ""):
+    if not q:
+        return []
+    like = f"%{q.lower()}%"
+    products = fetch_all(
+        """
+        SELECT p.id, p.name, p.brand, p.size, p.unit
+        FROM products p
+        WHERE lower(p.name) LIKE ? OR lower(p.brand) LIKE ?
+        ORDER BY p.name
+        LIMIT 30
+        """,
+        (like, like),
+    )
+    return JSONResponse(products)
+
+
+@app.post("/baskets")
+def create_basket(payload: dict[str, Any]):
+    name = payload.get("name") or "Panier"
+    items = payload.get("items", [])
+    basket_id = execute(
+        "INSERT INTO baskets (name, created_at) VALUES (?, datetime('now'))",
+        (name,),
+    )
+    if items:
+        from .db import execute_many
+
+        insert_rows = [
+            (
+                basket_id,
+                item.get("product_id"),
+                item.get("quantity", 1),
+            )
+            for item in items
+        ]
+        execute_many(
+            """
+            INSERT INTO basket_items (basket_id, product_id, quantity)
+            VALUES (?, ?, ?)
+            """,
+            insert_rows,
+        )
+    return {"id": basket_id, "name": name}
+
+
+@app.post("/baskets/form")
+def create_basket_form(
+    name: str = Form("Panier"),
+    product_id: int = Form(...),
+    quantity: int = Form(1),
+):
+    basket_id = execute(
+        "INSERT INTO baskets (name, created_at) VALUES (?, datetime('now'))",
+        (name,),
+    )
+    execute(
+        """
+        INSERT INTO basket_items (basket_id, product_id, quantity)
+        VALUES (?, ?, ?)
+        """,
+        (basket_id, product_id, quantity),
+    )
+    return RedirectResponse(url=f"/baskets/{basket_id}", status_code=303)
+
+
+@app.get("/baskets")
+def list_baskets():
+    baskets = fetch_all(
+        """
+        SELECT b.id, b.name, b.created_at, COUNT(bi.id) AS item_count
+        FROM baskets b
+        LEFT JOIN basket_items bi ON bi.basket_id = b.id
+        GROUP BY b.id
+        ORDER BY b.created_at DESC
+        """
+    )
+    return JSONResponse(baskets)
+
+
+@app.get("/baskets/{basket_id}", response_class=HTMLResponse)
+def get_basket(basket_id: int, request: Request):
+    basket = fetch_one("SELECT id, name, created_at FROM baskets WHERE id = ?", (basket_id,))
+    if not basket:
+        raise HTTPException(status_code=404, detail="Basket not found")
+    items = fetch_all(
+        """
+        SELECT bi.id, bi.quantity, p.name, p.brand, p.size, p.unit
+        FROM basket_items bi
+        JOIN products p ON p.id = bi.product_id
+        WHERE bi.basket_id = ?
+        ORDER BY p.name
+        """,
+        (basket_id,),
+    )
+    jobs = fetch_all(
+        """
+        SELECT id, type, status, created_at, updated_at
+        FROM jobs
+        WHERE json_extract(payload, '$.basket_id') = ?
+        ORDER BY created_at DESC
+        """,
+        (basket_id,),
+    )
+    compare_job = fetch_one(
+        """
+        SELECT result
+        FROM jobs
+        WHERE json_extract(payload, '$.basket_id') = ?
+          AND type = 'COMPARE_BASKET'
+          AND status = 'DONE'
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (basket_id,),
+    )
+    compare_result = json.loads(compare_job["result"]) if compare_job else None
+    return templates.TemplateResponse(
+        "basket.html",
+        {
+            "request": request,
+            "basket": basket,
+            "items": items,
+            "jobs": jobs,
+            "compare_result": compare_result,
+        },
+    )
+
+
+@app.post("/jobs/compare/{basket_id}")
+def compare_basket(basket_id: int):
+    basket = fetch_one("SELECT id FROM baskets WHERE id = ?", (basket_id,))
+    if not basket:
+        raise HTTPException(status_code=404, detail="Basket not found")
+    job_id = insert_job("COMPARE_BASKET", {"basket_id": basket_id})
+    return {"job_id": job_id}
+
+
+@app.post("/jobs/push/{basket_id}")
+async def push_basket(basket_id: int, request: Request, store_code: str | None = None):
+    if not store_code:
+        form = await request.form()
+        store_code = form.get("store_code")
+    if not store_code:
+        raise HTTPException(status_code=400, detail="store_code is required")
+    job_id = insert_job("PUSH_BASKET", {"basket_id": basket_id, "store_code": store_code})
+    return {"job_id": job_id}
+
+
+@app.post("/jobs/refresh/product/{product_id}")
+def refresh_product(product_id: int):
+    job_id = insert_job("REFRESH_PRODUCT", {"product_id": product_id})
+    return {"job_id": job_id}
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: int):
+    job = fetch_one(
+        """
+        SELECT id, type, status, payload, result, error, created_at, updated_at
+        FROM jobs
+        WHERE id = ?
+        """,
+        (job_id,),
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job["payload"] = json.loads(job["payload"] or "{}")
+    job["result"] = json.loads(job["result"] or "{}")
+    return JSONResponse(job)

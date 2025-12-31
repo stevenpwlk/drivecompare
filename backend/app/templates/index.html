@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Drive Compare</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Drive Compare</h1>
+
+    <section class="card">
+      <h2>Recherche produit</h2>
+      <input id="search" type="text" placeholder="Rechercher un produit" />
+      <div id="results"></div>
+    </section>
+
+    <section class="card">
+      <h2>Créer un panier rapide</h2>
+      <form method="post" action="/baskets/form">
+        <label>
+          Nom du panier
+          <input type="text" name="name" value="Panier" />
+        </label>
+        <label>
+          Produit ID
+          <input type="number" name="product_id" required />
+        </label>
+        <label>
+          Quantité
+          <input type="number" name="quantity" value="1" min="1" />
+        </label>
+        <button type="submit">Créer</button>
+      </form>
+      <p class="hint">Astuce: utilisez la recherche pour obtenir l'ID produit.</p>
+    </section>
+
+    <section class="card">
+      <h2>Historique paniers</h2>
+      <ul>
+        {% for basket in baskets %}
+          <li>
+            <a href="/baskets/{{ basket.id }}">{{ basket.name }}</a>
+            <span class="muted">({{ basket.item_count }} items, {{ basket.created_at }})</span>
+          </li>
+        {% else %}
+          <li>Aucun panier pour le moment.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    const search = document.getElementById('search');
+    const results = document.getElementById('results');
+    let timeout;
+
+    search.addEventListener('input', () => {
+      clearTimeout(timeout);
+      const query = search.value.trim();
+      if (!query) {
+        results.innerHTML = '';
+        return;
+      }
+      timeout = setTimeout(async () => {
+        const resp = await fetch(`/products/search?q=${encodeURIComponent(query)}`);
+        const data = await resp.json();
+        results.innerHTML = data.map(item => {
+          return `<div class="result">#${item.id} - ${item.name} (${item.brand || 'N/A'}) ${item.size || ''} ${item.unit || ''}</div>`;
+        }).join('') || '<div class="muted">Aucun résultat</div>';
+      }, 250);
+    });
+  </script>
+</body>
+</html>
