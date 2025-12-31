@@ -57,6 +57,26 @@ docker compose up --build
 - Les captures réseau XHR/Fetch sont écrites dans `/logs/leclerc_network_*.jsonl`.
 - En cas d'erreur, les fichiers `/logs/leclerc_error_*.png` et `/logs/leclerc_error_*.html` contiennent la capture d'écran et le HTML de la page.
 
+## Test POC Leclerc
+
+1. Démarrez les services.
+
+```bash
+docker compose up -d --build
+```
+
+2. Ouvrez l'UI: `http://<IP>:8000`.
+
+3. Lancez une recherche "coca" via le formulaire "Recherche produit".
+
+4. Vérifiez les logs réseau:
+
+```bash
+ls -lah ./logs
+```
+
+Le fichier `leclerc_network_*.jsonl` est créé dans `./logs` (volume Docker).
+
 ## Sanity checks
 
 ```bash
