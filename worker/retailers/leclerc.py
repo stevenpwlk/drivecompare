@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import quote_plus, urlparse
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -16,6 +17,33 @@ SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
 DEFAULT_TIMEOUT_MS = int(os.getenv("LECLERC_TIMEOUT_MS", "10000"))
 DEFAULT_RETRIES = int(os.getenv("LECLERC_RETRIES", "2"))
 BASE_URL = os.getenv("LECLERC_BASE_URL", "https://www.e.leclerc/")
+LECLERC_STORE_URL = os.getenv(
+    "LECLERC_STORE_URL",
+    "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
+)
+
+
+def remove_listener_safe(emitter: Any, event_name: str, handler: Any) -> None:
+    remover = getattr(emitter, "remove_listener", None)
+    if callable(remover):
+        try:
+            remover(event_name, handler)
+        except Exception:
+            return
+        return
+    off = getattr(emitter, "off", None)
+    if callable(off):
+        try:
+            off(event_name, handler)
+        except Exception:
+            return
+
+
+def build_search_url(query: str, store_url: str = LECLERC_STORE_URL) -> str:
+    parsed = urlparse(store_url)
+    base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else store_url.rstrip("/")
+    encoded = quote_plus(query)
+    return f"{base}/recherche.aspx?Texte={encoded}"
 
 
 @dataclass
@@ -66,6 +94,7 @@ class LeclercRetailer:
         timestamp = self._timestamp()
         screenshot_path = self.log_dir / f"leclerc_error_{timestamp}.png"
         html_path = self.log_dir / f"leclerc_error_{timestamp}.html"
+        trace_path = self.log_dir / f"leclerc_trace_{timestamp}.zip"
         try:
             self.page.screenshot(path=str(screenshot_path), full_page=True)
         except Exception:
@@ -74,8 +103,15 @@ class LeclercRetailer:
             html_path.write_text(self.page.content(), encoding="utf-8")
         except Exception:
             self.logger.exception("Failed to capture Leclerc HTML")
+        try:
+            self.page.context.tracing.stop(path=str(trace_path))
+        except Exception:
+            trace_path = None
         self.logger.error("Leclerc error during %s: %s", label, error)
-        return {"error_png": str(screenshot_path), "error_html": str(html_path)}
+        payload = {"error_png": str(screenshot_path), "error_html": str(html_path)}
+        if trace_path:
+            payload["trace_zip"] = str(trace_path)
+        return payload
 
     @contextmanager
     def _network_capture(self, metadata: dict[str, Any] | None = None) -> Iterator[Path]:
@@ -118,8 +154,189 @@ class LeclercRetailer:
         try:
             yield log_path
         finally:
-            self.page.off("response", handle_response)
+            remove_listener_safe(self.page, "response", handle_response)
             log_file.close()
+
+    def _handle_cookie_banner(self) -> None:
+        buttons = [
+            "button:has-text('Tout accepter')",
+            "button:has-text('Accepter tout')",
+            "button:has-text('Accepter')",
+            "button:has-text(\"J'accepte\")",
+        ]
+        for selector in buttons:
+            try:
+                button = self.page.locator(selector).first
+                if button.is_visible(timeout=1500):
+                    button.click(timeout=1500)
+                    self.page.wait_for_timeout(500)
+                    return
+            except PlaywrightTimeoutError:
+                continue
+            except Exception:
+                self.logger.debug("Leclerc cookie accept attempt failed", exc_info=True)
+
+        try:
+            close_button = self.page.locator("button:has-text('Fermer')").first
+            if close_button.is_visible(timeout=1000):
+                close_button.click(timeout=1000)
+        except Exception:
+            self.logger.debug("Leclerc cookie close attempt failed", exc_info=True)
+
+    def _search_with_input(self, query: str) -> bool:
+        selectors = (
+            "input[type='search'],"
+            "input[placeholder*='Recher'],"
+            "input[aria-label*='Recher']"
+        )
+        try:
+            search_input = self.page.locator(selectors).first
+            search_input.wait_for(timeout=2000)
+            search_input.fill(query, timeout=2000)
+            search_input.press("Enter")
+            self.page.wait_for_timeout(2000)
+            return True
+        except Exception:
+            self.logger.debug("Leclerc fallback search input failed", exc_info=True)
+            return False
+
+    def _extract_price(self, text: str) -> tuple[str | None, float | None]:
+        import re
+
+        match = re.search(r"(\d+[,.]\d{2})\s*€", text)
+        if not match:
+            return None, None
+        price_text = match.group(1).replace(",", ".")
+        try:
+            return price_text, float(price_text)
+        except ValueError:
+            return price_text, None
+
+    def _extract_unit_price(self, text: str) -> str | None:
+        import re
+
+        match = re.search(r"(\d+[,.]\d{2}\s*€\s*/\s*\w+)", text)
+        if match:
+            return match.group(1).replace(",", ".")
+        match = re.search(r"(\d+[,.]\d{2}\s*€/[\w]+)", text)
+        if match:
+            return match.group(1).replace(",", ".")
+        return None
+
+    def _parse_product_card(self, card, base_url: str) -> dict[str, Any] | None:
+        try:
+            title = None
+            title_locator = card.locator(
+                "h3, h2, .product-title, .product__title, [data-testid*='title']"
+            ).first
+            if title_locator.count():
+                title = title_locator.inner_text().strip()
+            if not title:
+                link_text = card.locator("a").first.inner_text().strip()
+                if link_text:
+                    title = link_text
+        except Exception:
+            title = None
+
+        try:
+            raw_text = card.inner_text()
+        except Exception:
+            raw_text = ""
+
+        price_text, price_value = self._extract_price(raw_text)
+        if not price_text:
+            try:
+                price_locator = card.locator(
+                    ".price, .product-price, [data-testid*='price']"
+                ).first
+                price_text = price_locator.inner_text().strip()
+                _, price_value = self._extract_price(price_text)
+            except Exception:
+                price_text = None
+
+        if not title or not price_text:
+            return None
+
+        url = None
+        try:
+            href = card.locator("a").first.get_attribute("href")
+            if href:
+                if href.startswith("http"):
+                    url = href
+                else:
+                    url = f"{base_url}{href}"
+        except Exception:
+            url = None
+
+        retailer_product_id = None
+        for attr in ("data-product-id", "data-productid", "data-id"):
+            try:
+                value = card.get_attribute(attr)
+            except Exception:
+                value = None
+            if value:
+                retailer_product_id = value
+                break
+
+        unit_price = self._extract_unit_price(raw_text)
+
+        return {
+            "title": title,
+            "price": price_value if price_value is not None else price_text,
+            "url": url,
+            "retailer_product_id": retailer_product_id,
+            "price_per_unit": unit_price,
+        }
+
+    def _parse_search_results(self, limit: int, base_url: str) -> list[dict[str, Any]]:
+        selectors = [
+            "article[data-product-id]",
+            "article[data-testid*='product']",
+            "div[data-product-id]",
+            "li[data-product-id]",
+            ".product",
+            ".product-item",
+            ".product-card",
+        ]
+        locator = self.page.locator(",".join(selectors))
+        items: list[dict[str, Any]] = []
+        count = locator.count()
+        for index in range(min(count, limit)):
+            card = locator.nth(index)
+            item = self._parse_product_card(card, base_url)
+            if item:
+                items.append(item)
+
+        if items:
+            return items
+
+        fallback_locator = self.page.locator("a:has-text('€')")
+        fallback_count = fallback_locator.count()
+        for index in range(min(fallback_count, limit)):
+            link = fallback_locator.nth(index)
+            try:
+                text = link.inner_text()
+            except Exception:
+                continue
+            price_text, price_value = self._extract_price(text)
+            if not price_text:
+                continue
+            title = text.split("€")[0].strip()
+            if not title:
+                continue
+            href = link.get_attribute("href")
+            url = None
+            if href:
+                url = href if href.startswith("http") else f"{base_url}{href}"
+            items.append(
+                {
+                    "title": title,
+                    "price": price_value if price_value is not None else price_text,
+                    "url": url,
+                    "retailer_product_id": None,
+                }
+            )
+        return items
 
     def _load_storage_state(self, account_type: str) -> Path:
         self._ensure_dirs()
@@ -169,26 +386,52 @@ class LeclercRetailer:
                 {"query": query, "account_type": account_type, "limit": limit}
             ) as network_log:
                 try:
-                    self.page.goto(BASE_URL, timeout=self.timeout_ms)
-                    self.page.wait_for_timeout(1500)
+                    store_url = LECLERC_STORE_URL
+                    self.page.goto(
+                        store_url,
+                        timeout=self.timeout_ms,
+                        wait_until="domcontentloaded",
+                    )
+                    self._handle_cookie_banner()
+                    self.page.wait_for_timeout(1000)
+                    search_url = build_search_url(query, store_url)
+                    used_search_url = False
                     try:
-                        self.logger.info("TODO: implement Leclerc search selectors")
-                        search_input = self.page.locator("input[type='search']").first
-                        search_input.fill(query, timeout=2000)
-                        search_input.press("Enter")
-                        self.page.wait_for_timeout(2000)
+                        self.page.goto(
+                            search_url,
+                            timeout=self.timeout_ms,
+                            wait_until="domcontentloaded",
+                        )
+                        used_search_url = True
+                    except Exception:
+                        self.logger.info(
+                            "Leclerc search URL navigation failed; falling back to input search"
+                        )
+                        self._search_with_input(query)
+                    if not used_search_url:
+                        self._handle_cookie_banner()
+                    try:
+                        parsed = urlparse(store_url)
+                        base_url = (
+                            f"{parsed.scheme}://{parsed.netloc}"
+                            if parsed.netloc
+                            else store_url.rstrip("/")
+                        )
+                        items = self._parse_search_results(limit, base_url)
                     except Exception as error:
-                        error_paths = self._capture_error_artifacts("search", error)
+                        error_paths = self._capture_error_artifacts("search_parse", error)
+                        items = []
                     try:
                         self.page.context.storage_state(path=str(storage_path))
                     except Exception:
                         self.logger.exception("Failed to save Leclerc storage_state")
                     return {
-                        "items": [],
+                        "items": items,
                         "debug": {
                             "network_log": str(network_log),
                             "error_png": (error_paths or {}).get("error_png"),
                             "error_html": (error_paths or {}).get("error_html"),
+                            "trace_zip": (error_paths or {}).get("trace_zip"),
                         },
                     }
                 except Exception as error:
@@ -202,11 +445,17 @@ class LeclercRetailer:
                             "network_log": str(network_log),
                             "error_png": (error_paths or {}).get("error_png"),
                             "error_html": (error_paths or {}).get("error_html"),
+                            "trace_zip": (error_paths or {}).get("trace_zip"),
                         },
                     }
         return {
             "items": [],
-            "debug": {"network_log": None, "error_png": None, "error_html": None},
+            "debug": {
+                "network_log": None,
+                "error_png": None,
+                "error_html": None,
+                "trace_zip": None,
+            },
         }
 
     def clear_basket(self) -> dict[str, Any]:
