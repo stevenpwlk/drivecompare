@@ -61,7 +61,7 @@ class LeclercRetailer:
             self.logger.exception("Leclerc login heuristic failed")
             return False
 
-    def _capture_error_artifacts(self, label: str, error: Exception) -> None:
+    def _capture_error_artifacts(self, label: str, error: Exception) -> dict[str, str]:
         self._ensure_dirs()
         timestamp = self._timestamp()
         screenshot_path = self.log_dir / f"leclerc_error_{timestamp}.png"
@@ -75,12 +75,20 @@ class LeclercRetailer:
         except Exception:
             self.logger.exception("Failed to capture Leclerc HTML")
         self.logger.error("Leclerc error during %s: %s", label, error)
+        return {"error_png": str(screenshot_path), "error_html": str(html_path)}
 
     @contextmanager
-    def _network_capture(self) -> Iterator[Path]:
+    def _network_capture(self, metadata: dict[str, Any] | None = None) -> Iterator[Path]:
         self._ensure_dirs()
         log_path = self.log_dir / f"leclerc_network_{self._timestamp()}.jsonl"
         log_file = log_path.open("a", encoding="utf-8")
+        header = {
+            "event": "start",
+            "timestamp": self._timestamp(),
+            "metadata": metadata or {},
+        }
+        log_file.write(json.dumps(header, ensure_ascii=False) + "\n")
+        log_file.flush()
 
         def handle_response(response) -> None:
             try:
@@ -113,7 +121,7 @@ class LeclercRetailer:
             self.page.off("response", handle_response)
             log_file.close()
 
-    def login(self, account_type: str = "bot") -> dict[str, Any]:
+    def _load_storage_state(self, account_type: str) -> Path:
         self._ensure_dirs()
         storage_path = self.sessions_dir / f"leclerc_{account_type}.json"
         if storage_path.exists():
@@ -125,6 +133,11 @@ class LeclercRetailer:
                 self.logger.info("Loaded Leclerc storage_state for %s", account_type)
             except Exception:
                 self.logger.exception("Failed to load Leclerc storage_state")
+        return storage_path
+
+    def login(self, account_type: str = "bot") -> dict[str, Any]:
+        self._ensure_dirs()
+        storage_path = self._load_storage_state(account_type)
         try:
             self.page.goto(BASE_URL, timeout=self.timeout_ms)
         except Exception as error:
@@ -145,25 +158,56 @@ class LeclercRetailer:
             self.logger.exception("Failed to save Leclerc storage_state")
         return {"status": "pending", "storage_state": str(storage_path)}
 
-    def search(self, query: str) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, *, account_type: str = "bot", limit: int = 20
+    ) -> dict[str, Any]:
         self._ensure_dirs()
+        storage_path = self._load_storage_state(account_type)
+        error_paths: dict[str, str] | None = None
         for attempt in range(1, self.retries + 2):
-            with self._network_capture():
+            with self._network_capture(
+                {"query": query, "account_type": account_type, "limit": limit}
+            ) as network_log:
                 try:
                     self.page.goto(BASE_URL, timeout=self.timeout_ms)
-                    self.logger.info("TODO: implement Leclerc search selectors")
-                    search_input = self.page.locator("input[type='search']").first
-                    search_input.fill(query, timeout=2000)
-                    search_input.press("Enter")
-                    self.page.wait_for_timeout(2000)
-                    return []
+                    self.page.wait_for_timeout(1500)
+                    try:
+                        self.logger.info("TODO: implement Leclerc search selectors")
+                        search_input = self.page.locator("input[type='search']").first
+                        search_input.fill(query, timeout=2000)
+                        search_input.press("Enter")
+                        self.page.wait_for_timeout(2000)
+                    except Exception as error:
+                        error_paths = self._capture_error_artifacts("search", error)
+                    try:
+                        self.page.context.storage_state(path=str(storage_path))
+                    except Exception:
+                        self.logger.exception("Failed to save Leclerc storage_state")
+                    return {
+                        "items": [],
+                        "debug": {
+                            "network_log": str(network_log),
+                            "error_png": (error_paths or {}).get("error_png"),
+                            "error_html": (error_paths or {}).get("error_html"),
+                        },
+                    }
                 except Exception as error:
-                    self._capture_error_artifacts("search", error)
+                    error_paths = self._capture_error_artifacts("search", error)
                     if attempt <= self.retries:
                         self.logger.warning("Retrying Leclerc search (%s/%s)", attempt, self.retries)
                         continue
-                    return []
-        return []
+                    return {
+                        "items": [],
+                        "debug": {
+                            "network_log": str(network_log),
+                            "error_png": (error_paths or {}).get("error_png"),
+                            "error_html": (error_paths or {}).get("error_html"),
+                        },
+                    }
+        return {
+            "items": [],
+            "debug": {"network_log": None, "error_png": None, "error_html": None},
+        }
 
     def clear_basket(self) -> dict[str, Any]:
         self.logger.info("TODO: implement Leclerc clear basket")
@@ -197,8 +241,8 @@ def login(page: Page, account_type: str = "bot") -> dict[str, Any]:
     return LeclercRetailer(page).login(account_type)
 
 
-def search(page: Page, query: str) -> list[dict[str, Any]]:
-    return LeclercRetailer(page).search(query)
+def search(page: Page, query: str, account_type: str = "bot", limit: int = 20) -> dict[str, Any]:
+    return LeclercRetailer(page).search(query, account_type=account_type, limit=limit)
 
 
 def clear_basket(page: Page) -> dict[str, Any]:

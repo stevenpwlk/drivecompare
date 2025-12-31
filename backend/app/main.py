@@ -189,6 +189,21 @@ def refresh_product(product_id: int):
     return {"job_id": job_id}
 
 
+@app.post("/jobs/retailer-search")
+def retailer_search(payload: dict[str, Any]):
+    query = (payload.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    job_payload = {
+        "store": "LECLERC",
+        "account_type": "bot",
+        "query": query,
+        "limit": 20,
+    }
+    job_id = insert_job("RETAILER_SEARCH", job_payload)
+    return {"job_id": job_id, "status": "PENDING"}
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: int):
     job = fetch_one(

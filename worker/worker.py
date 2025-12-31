@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import schedule
 from playwright.sync_api import sync_playwright
@@ -126,12 +127,62 @@ def handle_push_basket(job):
     )
 
 
+def handle_retailer_search(job):
+    payload = job["payload"]
+    store = (payload.get("store") or "").upper()
+    if store != "LECLERC":
+        update_job(job["id"], "FAILED", error=f"Unsupported store: {store}")
+        return
+    query = (payload.get("query") or "").strip()
+    if not query:
+        update_job(job["id"], "FAILED", error="Query is required")
+        return
+    account_type = payload.get("account_type") or "bot"
+    limit = int(payload.get("limit") or 20)
+    result: dict[str, Any] = {"items": [], "debug": {}}
+    error_message: str | None = None
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    storage_path = SESSIONS_DIR / f"leclerc_{account_type}.json"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context_kwargs = {}
+        if storage_path.exists():
+            context_kwargs["storage_state"] = str(storage_path)
+        context = browser.new_context(**context_kwargs)
+        page = context.new_page()
+        try:
+            retailer = leclerc.LeclercRetailer(
+                page,
+                log_dir=LOG_DIR,
+                sessions_dir=SESSIONS_DIR,
+            )
+            result = retailer.search(query, account_type=account_type, limit=limit)
+        except Exception as error:
+            logging.exception("Leclerc search failed")
+            error_message = str(error)
+        finally:
+            try:
+                context.storage_state(path=str(storage_path))
+            except Exception:
+                logging.exception("Failed to save Leclerc storage_state")
+            browser.close()
+
+    if error_message:
+        update_job(job["id"], "FAILED", result=result, error=error_message)
+    else:
+        update_job(job["id"], "DONE", result=result)
+
+
 def process_job(job):
     handlers = {
         "COMPARE_BASKET": handle_compare,
         "REFRESH_PRODUCT": handle_refresh_product,
         "REFRESH_BASKET": handle_refresh_basket,
         "PUSH_BASKET": handle_push_basket,
+        "RETAILER_SEARCH": handle_retailer_search,
     }
     handler = handlers.get(job["type"])
     if not handler:

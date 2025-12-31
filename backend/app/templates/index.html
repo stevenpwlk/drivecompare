@@ -11,7 +11,16 @@
 
     <section class="card">
       <h2>Recherche produit</h2>
-      <input id="search" type="text" placeholder="Rechercher un produit" />
+      <form id="search-form">
+        <label>
+          Rechercher un produit
+          <input id="search" type="text" placeholder="Rechercher un produit" />
+        </label>
+        <button type="submit">Lancer la recherche Leclerc</button>
+      </form>
+      <div id="job-status" class="muted"></div>
+      <div id="job-results"></div>
+      <h3>Résultats locaux</h3>
       <div id="results"></div>
     </section>
 
@@ -51,9 +60,13 @@
   </main>
 
   <script>
+    const searchForm = document.getElementById('search-form');
     const search = document.getElementById('search');
     const results = document.getElementById('results');
+    const jobStatus = document.getElementById('job-status');
+    const jobResults = document.getElementById('job-results');
     let timeout;
+    let poller;
 
     search.addEventListener('input', () => {
       clearTimeout(timeout);
@@ -69,6 +82,79 @@
           return `<div class="result">#${item.id} - ${item.name} (${item.brand || 'N/A'}) ${item.size || ''} ${item.unit || ''}</div>`;
         }).join('') || '<div class="muted">Aucun résultat</div>';
       }, 250);
+    });
+
+    function renderJob(job) {
+      jobStatus.innerHTML = `<strong>Job #${job.id}</strong> - ${job.status}`;
+      if (job.status === 'DONE') {
+        const items = (job.result?.items || []).map(item => {
+          const price = item.price != null ? `${item.price} €` : 'N/A';
+          const unitPrice = item.unit_price != null ? `${item.unit_price} ${item.unit || ''}` : '';
+          return `
+            <div class="result">
+              <strong>${item.title || 'Produit'}</strong>
+              <div class="muted">${item.brand || 'Marque inconnue'} - ${price} ${unitPrice}</div>
+              <div class="muted">${item.url || ''}</div>
+            </div>
+          `;
+        }).join('');
+        jobResults.innerHTML = items || '<div class="muted">Aucun résultat côté Leclerc.</div>';
+      } else if (job.status === 'FAILED') {
+        const debug = job.result?.debug || {};
+        const details = [
+          debug.network_log ? `Network: ${debug.network_log}` : null,
+          debug.error_png ? `Screenshot: ${debug.error_png}` : null,
+          debug.error_html ? `HTML: ${debug.error_html}` : null,
+        ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
+        jobResults.innerHTML = `
+          <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
+          ${details ? `<div class="muted">${details}</div>` : ''}
+        `;
+      } else {
+        jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
+      }
+    }
+
+    async function pollJob(jobId) {
+      const resp = await fetch(`/jobs/${jobId}`);
+      if (!resp.ok) {
+        jobStatus.textContent = 'Impossible de récupérer le job.';
+        return true;
+      }
+      const job = await resp.json();
+      renderJob(job);
+      return job.status === 'DONE' || job.status === 'FAILED';
+    }
+
+    searchForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const query = search.value.trim();
+      if (!query) {
+        jobStatus.textContent = 'Veuillez saisir une recherche.';
+        return;
+      }
+      jobStatus.textContent = 'Création du job...';
+      jobResults.innerHTML = '';
+      if (poller) {
+        clearInterval(poller);
+      }
+      const resp = await fetch('/jobs/retailer-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      if (!resp.ok) {
+        jobStatus.textContent = 'Impossible de lancer la recherche.';
+        return;
+      }
+      const data = await resp.json();
+      jobStatus.innerHTML = `<strong>Job #${data.job_id}</strong> - ${data.status}`;
+      poller = setInterval(async () => {
+        const done = await pollJob(data.job_id);
+        if (done) {
+          clearInterval(poller);
+        }
+      }, 1000);
     });
   </script>
 </body>
