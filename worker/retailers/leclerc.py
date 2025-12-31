@@ -129,14 +129,17 @@ class LeclercRetailer:
         def handle_response(response) -> None:
             try:
                 request = response.request
-                if request.resource_type not in {"xhr", "fetch"}:
+                if request.resource_type not in {"xhr", "fetch", "document"}:
                     return
                 content_type = response.headers.get("content-type", "")
                 body = response.body()
                 size = len(body)
                 excerpt = None
-                if content_type.startswith("text/") or "json" in content_type:
-                    excerpt = body.decode(errors="replace")[:500]
+                if request.resource_type in {"xhr", "fetch"}:
+                    if content_type.startswith("text/") or "json" in content_type:
+                        excerpt = body.decode(errors="replace")[:500]
+                elif "text/html" in content_type:
+                    excerpt = body.decode(errors="replace")[:300]
                 entry = {
                     "url": response.url,
                     "status": response.status,
@@ -227,7 +230,8 @@ class LeclercRetailer:
         try:
             title = None
             title_locator = card.locator(
-                "h3, h2, .product-title, .product__title, [data-testid*='title']"
+                "h3, h2, .product-title, .product__title, [data-testid*='title'], "
+                "a[title], [class*='libelle'], [class*='title'], [data-qa*='title']"
             ).first
             if title_locator.count():
                 title = title_locator.inner_text().strip()
@@ -249,6 +253,13 @@ class LeclercRetailer:
                 price_locator = card.locator(
                     ".price, .product-price, [data-testid*='price']"
                 ).first
+                price_text = price_locator.inner_text().strip()
+                _, price_value = self._extract_price(price_text)
+            except Exception:
+                price_text = None
+        if not price_text:
+            try:
+                price_locator = card.locator("span:has-text('€'), div:has-text('€')").first
                 price_text = price_locator.inner_text().strip()
                 _, price_value = self._extract_price(price_text)
             except Exception:
@@ -297,6 +308,12 @@ class LeclercRetailer:
             ".product",
             ".product-item",
             ".product-card",
+            ".liste-produit",
+            ".product-list",
+            ".grid-produits",
+            ".bloc-produit",
+            ".product__item",
+            "[class*='produit']",
         ]
         locator = self.page.locator(",".join(selectors))
         items: list[dict[str, Any]] = []
@@ -328,6 +345,54 @@ class LeclercRetailer:
             url = None
             if href:
                 url = href if href.startswith("http") else f"{base_url}{href}"
+            items.append(
+                {
+                    "title": title,
+                    "price": price_value if price_value is not None else price_text,
+                    "url": url,
+                    "retailer_product_id": None,
+                }
+            )
+        if items:
+            return items
+
+        price_locator = self.page.locator(r"text=/\d+[,.]\d{2}\s*€/").locator(
+            "xpath=ancestor-or-self::*[.//a][1]"
+        )
+        price_count = price_locator.count()
+        for index in range(min(price_count, limit)):
+            container = price_locator.nth(index)
+            try:
+                raw_text = container.inner_text()
+            except Exception:
+                continue
+            price_text, price_value = self._extract_price(raw_text)
+            if not price_text:
+                continue
+            link_locator = container.locator("a").first
+            title = None
+            url = None
+            try:
+                title_locator = container.locator(
+                    "a[title], [class*='libelle'], [class*='title'], [data-qa*='title']"
+                ).first
+                if title_locator.count():
+                    title = title_locator.inner_text().strip()
+            except Exception:
+                title = None
+            if not title:
+                try:
+                    title = link_locator.inner_text().strip()
+                except Exception:
+                    title = None
+            try:
+                href = link_locator.get_attribute("href")
+                if href:
+                    url = href if href.startswith("http") else f"{base_url}{href}"
+            except Exception:
+                url = None
+            if not title:
+                continue
             items.append(
                 {
                     "title": title,
@@ -393,23 +458,19 @@ class LeclercRetailer:
                         wait_until="domcontentloaded",
                     )
                     self._handle_cookie_banner()
-                    self.page.wait_for_timeout(1000)
-                    search_url = build_search_url(query, store_url)
-                    used_search_url = False
                     try:
+                        self.page.wait_for_load_state("networkidle", timeout=4000)
+                    except Exception:
+                        self.page.wait_for_timeout(1000)
+                    used_input = self._search_with_input(query)
+                    if not used_input:
+                        search_url = build_search_url(query, store_url)
                         self.page.goto(
                             search_url,
                             timeout=self.timeout_ms,
                             wait_until="domcontentloaded",
                         )
-                        used_search_url = True
-                    except Exception:
-                        self.logger.info(
-                            "Leclerc search URL navigation failed; falling back to input search"
-                        )
-                        self._search_with_input(query)
-                    if not used_search_url:
-                        self._handle_cookie_banner()
+                    self._handle_cookie_banner()
                     try:
                         parsed = urlparse(store_url)
                         base_url = (
@@ -421,6 +482,32 @@ class LeclercRetailer:
                     except Exception as error:
                         error_paths = self._capture_error_artifacts("search_parse", error)
                         items = []
+                    noresults_paths: dict[str, str] | None = None
+                    if not items:
+                        self._ensure_dirs()
+                        timestamp = self._timestamp()
+                        noresults_png = self.log_dir / f"leclerc_noresults_{timestamp}.png"
+                        noresults_html = self.log_dir / f"leclerc_noresults_{timestamp}.html"
+                        try:
+                            self.page.screenshot(path=str(noresults_png), full_page=True)
+                        except Exception:
+                            self.logger.exception("Failed to capture Leclerc noresults screenshot")
+                        try:
+                            noresults_html.write_text(self.page.content(), encoding="utf-8")
+                        except Exception:
+                            self.logger.exception("Failed to capture Leclerc noresults HTML")
+                        noresults_paths = {
+                            "noresults_png": str(noresults_png),
+                            "noresults_html": str(noresults_html),
+                        }
+                    try:
+                        final_url = self.page.url
+                    except Exception:
+                        final_url = None
+                    try:
+                        page_title = self.page.title()
+                    except Exception:
+                        page_title = None
                     try:
                         self.page.context.storage_state(path=str(storage_path))
                     except Exception:
@@ -432,10 +519,22 @@ class LeclercRetailer:
                             "error_png": (error_paths or {}).get("error_png"),
                             "error_html": (error_paths or {}).get("error_html"),
                             "trace_zip": (error_paths or {}).get("trace_zip"),
+                            "noresults_png": (noresults_paths or {}).get("noresults_png"),
+                            "noresults_html": (noresults_paths or {}).get("noresults_html"),
+                            "final_url": final_url,
+                            "page_title": page_title,
                         },
                     }
                 except Exception as error:
                     error_paths = self._capture_error_artifacts("search", error)
+                    try:
+                        final_url = self.page.url
+                    except Exception:
+                        final_url = None
+                    try:
+                        page_title = self.page.title()
+                    except Exception:
+                        page_title = None
                     if attempt <= self.retries:
                         self.logger.warning("Retrying Leclerc search (%s/%s)", attempt, self.retries)
                         continue
@@ -446,6 +545,10 @@ class LeclercRetailer:
                             "error_png": (error_paths or {}).get("error_png"),
                             "error_html": (error_paths or {}).get("error_html"),
                             "trace_zip": (error_paths or {}).get("trace_zip"),
+                            "noresults_png": None,
+                            "noresults_html": None,
+                            "final_url": final_url,
+                            "page_title": page_title,
                         },
                     }
         return {
@@ -455,6 +558,10 @@ class LeclercRetailer:
                 "error_png": None,
                 "error_html": None,
                 "trace_zip": None,
+                "noresults_png": None,
+                "noresults_html": None,
+                "final_url": None,
+                "page_title": None,
             },
         }
 

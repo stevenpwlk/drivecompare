@@ -55,9 +55,19 @@ docker compose up --build
 
 ## Debug Leclerc
 
-- Les captures réseau XHR/Fetch sont écrites dans `/logs/leclerc_network_*.jsonl`.
-- En cas d'erreur, les fichiers `/logs/leclerc_error_*.png` et `/logs/leclerc_error_*.html` contiennent la capture d'écran et le HTML de la page.
-- Le store Leclerc est configurable via `LECLERC_STORE_URL` (ex: autre drive en changeant l'URL dans `.env`).
+Pour déclencher une recherche Leclerc via l'IHM :
+
+1. Démarrez les services (`docker compose up --build`).
+2. Ouvrez l'UI: `http://localhost:8000/`.
+3. Lancez une recherche "Recherche produit" (ex: `coca`, `lait`, `pâtes`).
+
+Où récupérer les artefacts (volume `/logs`) :
+
+- Réseau: `/logs/leclerc_network_*.jsonl` (document + XHR/Fetch).
+- Pas de résultats: `/logs/leclerc_noresults_*.png` et `/logs/leclerc_noresults_*.html`.
+- Erreurs Playwright: `/logs/leclerc_error_*.png` et `/logs/leclerc_error_*.html`.
+
+Le store Leclerc est configurable via `LECLERC_STORE_URL` (ex: autre drive en changeant l'URL dans `.env`).
 
 ## How to test manually
 
