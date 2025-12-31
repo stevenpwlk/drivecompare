@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build: ./backend
@@ -15,6 +13,8 @@ services:
 
   worker:
     build: ./worker
+    ipc: host
+    init: true
     env_file:
       - .env
     volumes:
