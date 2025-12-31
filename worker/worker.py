@@ -145,13 +145,22 @@ def handle_retailer_search(job):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     storage_path = SESSIONS_DIR / f"leclerc_{account_type}.json"
+    leclerc_profile_dir = leclerc.LECLERC_PROFILE_DIR
+    use_persistent_profile = leclerc.persistent_profile_exists(leclerc_profile_dir)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context_kwargs = {}
-        if storage_path.exists():
-            context_kwargs["storage_state"] = str(storage_path)
-        context = browser.new_context(**context_kwargs)
+        browser = None
+        if use_persistent_profile:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(leclerc_profile_dir),
+                headless=True,
+            )
+        else:
+            browser = p.chromium.launch(headless=True)
+            context_kwargs = {}
+            if storage_path.exists():
+                context_kwargs["storage_state"] = str(storage_path)
+            context = browser.new_context(**context_kwargs)
         page = context.new_page()
         try:
             retailer = leclerc.LeclercRetailer(
@@ -172,11 +181,14 @@ def handle_retailer_search(job):
             logging.exception("Leclerc search failed")
             error_message = str(error)
         finally:
-            try:
-                context.storage_state(path=str(storage_path))
-            except Exception:
-                logging.exception("Failed to save Leclerc storage_state")
-            browser.close()
+            if not use_persistent_profile:
+                try:
+                    context.storage_state(path=str(storage_path))
+                except Exception:
+                    logging.exception("Failed to save Leclerc storage_state")
+            context.close()
+            if browser:
+                browser.close()
 
     if error_message:
         update_job(job["id"], "FAILED", result=result, error=error_message)

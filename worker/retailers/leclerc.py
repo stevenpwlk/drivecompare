@@ -17,6 +17,9 @@ SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
 DEFAULT_TIMEOUT_MS = int(os.getenv("LECLERC_TIMEOUT_MS", "10000"))
 DEFAULT_RETRIES = int(os.getenv("LECLERC_RETRIES", "2"))
 BASE_URL = os.getenv("LECLERC_BASE_URL", "https://www.e.leclerc/")
+LECLERC_PROFILE_DIR = Path(
+    os.getenv("LECLERC_PROFILE_DIR", str(SESSIONS_DIR / "leclerc_profile"))
+)
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
@@ -29,6 +32,17 @@ def is_datadome_block(page_html: str) -> bool:
         or "DataDome" in page_html
         or "Access blocked" in page_html
     )
+
+
+def persistent_profile_exists(profile_dir: Path = LECLERC_PROFILE_DIR) -> bool:
+    if not profile_dir.exists():
+        return False
+    candidates = [
+        profile_dir / "Default" / "Preferences",
+        profile_dir / "Default" / "Cookies",
+        profile_dir / "Default" / "Network" / "Cookies",
+    ]
+    return any(path.exists() for path in candidates)
 
 
 class LeclercBlocked(RuntimeError):
@@ -83,6 +97,10 @@ class LeclercRetailer:
         self.sessions_dir = sessions_dir or SESSIONS_DIR
         self.timeout_ms = timeout_ms
         self.retries = retries
+        self.profile_dir = Path(
+            os.getenv("LECLERC_PROFILE_DIR", str(self.sessions_dir / "leclerc_profile"))
+        )
+        self.use_persistent_profile = persistent_profile_exists(self.profile_dir)
         self.logger = logging.getLogger(__name__)
 
     def _timestamp(self) -> int:
@@ -433,8 +451,10 @@ class LeclercRetailer:
             )
         return items
 
-    def _load_storage_state(self, account_type: str) -> Path:
+    def _load_storage_state(self, account_type: str) -> Path | None:
         self._ensure_dirs()
+        if self.use_persistent_profile:
+            return None
         storage_path = self.sessions_dir / f"leclerc_{account_type}.json"
         if storage_path.exists():
             try:
@@ -457,18 +477,20 @@ class LeclercRetailer:
             return {"status": "error", "message": str(error)}
 
         if self._is_logged_in():
-            self.page.context.storage_state(path=str(storage_path))
-            return {"status": "restored", "storage_state": str(storage_path)}
+            if storage_path:
+                self.page.context.storage_state(path=str(storage_path))
+            return {"status": "restored", "storage_state": str(storage_path) if storage_path else None}
 
         self.logger.info("TODO: implement Leclerc login selectors for %s", account_type)
         # TODO: navigate to the login form and complete authentication.
         # TODO: fill email/password selectors once identified.
 
-        try:
-            self.page.context.storage_state(path=str(storage_path))
-        except Exception:
-            self.logger.exception("Failed to save Leclerc storage_state")
-        return {"status": "pending", "storage_state": str(storage_path)}
+        if storage_path:
+            try:
+                self.page.context.storage_state(path=str(storage_path))
+            except Exception:
+                self.logger.exception("Failed to save Leclerc storage_state")
+        return {"status": "pending", "storage_state": str(storage_path) if storage_path else None}
 
     def search(
         self, query: str, *, account_type: str = "bot", limit: int = 20
@@ -496,6 +518,9 @@ class LeclercRetailer:
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
                         blocked_paths["network_log"] = str(network_log)
+                        blocked_paths["instruction"] = (
+                            "Ouvrir Leclerc GUI pour créer/rafraîchir la session."
+                        )
                         raise LeclercBlocked("DATADOME_BLOCKED", blocked_paths)
                     used_input = self._search_with_input(query)
                     if not used_input:
@@ -510,6 +535,9 @@ class LeclercRetailer:
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
                         blocked_paths["network_log"] = str(network_log)
+                        blocked_paths["instruction"] = (
+                            "Ouvrir Leclerc GUI pour créer/rafraîchir la session."
+                        )
                         raise LeclercBlocked("DATADOME_BLOCKED", blocked_paths)
                     try:
                         parsed = urlparse(store_url)
@@ -548,10 +576,11 @@ class LeclercRetailer:
                         page_title = self.page.title()
                     except Exception:
                         page_title = None
-                    try:
-                        self.page.context.storage_state(path=str(storage_path))
-                    except Exception:
-                        self.logger.exception("Failed to save Leclerc storage_state")
+                    if storage_path:
+                        try:
+                            self.page.context.storage_state(path=str(storage_path))
+                        except Exception:
+                            self.logger.exception("Failed to save Leclerc storage_state")
                     return {
                         "items": items,
                         "debug": {

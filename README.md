@@ -22,7 +22,7 @@ newgrp docker
 
 ## Démarrage rapide
 
-1. Créez le fichier `.env` (ou copiez `.env.example`).
+1. Créez le fichier `.env` (ou copiez `.env.example`) et ajustez `PUBLIC_HOST` à l'IP LAN du serveur.
 
 ```bash
 cp .env.example .env
@@ -77,30 +77,48 @@ Dans ce cas, la recherche échoue en `FAILED` avec la raison `DATADOME_BLOCKED` 
 - `/logs/leclerc_blocked_*.html`
 - `/logs/leclerc_blocked_*.png`
 
-### Bootstrap session (assisté)
+### Session Leclerc via GUI (mobile-first)
 
-Le worker reste en mode headless pour les recherches quotidiennes. Pour créer une session valide:
+Le worker reste en mode headless pour les recherches quotidiennes. Pour créer une session valide sur mobile (LAN):
 
-```bash
-docker compose run --rm worker python /app/worker/tools/leclerc_bootstrap.py --account bot
-```
+A) Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 
-Le script ouvre une fenêtre Playwright (non headless). Réalisez les actions nécessaires
-(captcha/choix magasin/login), puis appuyez sur Entrée dans la console. Le fichier
-`/sessions/leclerc_bot.json` est alors sauvegardé.
+B) Cliquer sur **"Ouvrir Leclerc (session)"** (ouvre `http://<IP>:5800`).
 
-### Limitations headless / Docker
+C) Dans le navigateur distant:
+   - Aller sur `LECLERC_STORE_URL`.
+   - Accepter les cookies.
+   - Passer DataDome si nécessaire.
+   - Se connecter / choisir le magasin.
 
-Si `headless=False` ne peut pas s'afficher dans le conteneur:
+D) Fermer l’onglet, revenir sur DriveCompare et relancer la recherche.
 
-1. Exécutez le bootstrap sur une machine avec interface graphique (PC local).
-2. Copiez le fichier `sessions/leclerc_bot.json` vers le serveur (volume `/sessions`).
+La session est persistée dans `./sessions/leclerc_profile` et réutilisée par Playwright headless.
 
-Si vous mettez en place un accès X11/VNC/noVNC, vous pouvez aussi lancer le bootstrap depuis Docker.
+### Configuration leclerc-gui (Chromium)
+
+Le service `leclerc-gui` expose une interface web sur `http://<IP>:5800`.
+Pour éviter un accès libre sur le LAN, l'image `jlesage/chromium` supporte:
+
+- `WEB_AUTHENTICATION=1`
+- `WEB_AUTHENTICATION_USERNAME`
+- `WEB_AUTHENTICATION_PASSWORD`
+
+L'URL du bouton dans l'IHM est construite avec `PUBLIC_HOST` (ou `BACKEND_PUBLIC_BASE_URL` si défini).
+
+Voir `.env.example` pour les variables disponibles.
+
+### Dépannage
+
+- Si DataDome réapparaît, refaire l'étape **Session Leclerc via GUI**.
+- Si `http://<IP>:5800` n'est pas accessible, vérifiez:
+  - que `leclerc-gui` est démarré (`docker compose ps`),
+  - que `PUBLIC_HOST` pointe vers l'IP LAN du serveur,
+  - que le port 5800 est ouvert sur le LAN.
 
 ### Validité
 
-Si Leclerc rebloque l'accès, relancez simplement le bootstrap pour régénérer la session.
+Si Leclerc rebloque l'accès, relancez simplement la session via le GUI pour régénérer la session.
 
 ## How to test manually
 
@@ -147,6 +165,6 @@ docker compose logs -f worker
 ├── worker/             # Worker Playwright + scheduler
 ├── data/               # SQLite (volume local)
 ├── logs/               # traces/screenhots
-├── sessions/           # storage_state JSON Playwright
+├── sessions/           # storage_state JSON + profil Leclerc (leclerc_profile)
 └── docker-compose.yml
 ```

@@ -23,3 +23,16 @@ services:
       - ./sessions:/sessions
     depends_on:
       - backend
+
+  leclerc-gui:
+    image: jlesage/chromium
+    ports:
+      - "5800:5800"
+      - "5900:5900"
+    volumes:
+      - ./sessions/leclerc_profile:/config
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - WEB_AUTHENTICATION=${WEB_AUTHENTICATION:-0}
+      - WEB_AUTHENTICATION_USERNAME=${WEB_AUTHENTICATION_USERNAME:-}
+      - WEB_AUTHENTICATION_PASSWORD=${WEB_AUTHENTICATION_PASSWORD:-}
