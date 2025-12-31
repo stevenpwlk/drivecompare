@@ -7,7 +7,7 @@ Application locale (LAN) pour comparer les prix entre le drive Leclerc Seclin Lo
 - Recherche produits + ajout panier local.
 - Historique des paniers et comparaison.
 - Jobs en base (COMPARE_BASKET, REFRESH_PRODUCT, REFRESH_BASKET, PUSH_BASKET).
-- Worker Playwright (headless) avec scheduler quotidien à 05:00.
+- Worker Playwright (headless) avec scheduler quotidien à 05:00 (image Playwright officielle).
 - SQLite en mode WAL.
 - Sessions Playwright persistées dans `/sessions`.
 
@@ -46,9 +46,25 @@ docker compose up --build
 
 ## Notes
 
+- Le docker-compose.yml n'utilise plus de clé `version:` (obsolète avec compose v2).
+
 - Le worker utilise Playwright headless, avec des stubs pour les retailers.
 - Les erreurs Playwright génèrent une capture d’écran + trace dans `/logs`.
 - Les comptes bots/main sont gérés via `.env` (aucun secret dans le code).
+
+## Debug Leclerc
+
+- Les captures réseau XHR/Fetch sont écrites dans `/logs/leclerc_network_*.jsonl`.
+- En cas d'erreur, les fichiers `/logs/leclerc_error_*.png` et `/logs/leclerc_error_*.html` contiennent la capture d'écran et le HTML de la page.
+
+## Sanity checks
+
+```bash
+docker compose build --no-cache worker
+docker compose up -d --build
+docker compose ps
+docker compose logs -f worker
+```
 
 ## Structure
 

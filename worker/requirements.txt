@@ -1,2 +1,2 @@
 schedule==1.2.2
-playwright==1.46.0
+playwright==1.57.0
