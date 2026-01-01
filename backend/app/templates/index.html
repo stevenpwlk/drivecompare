@@ -20,20 +20,14 @@
         <button type="submit">Lancer la recherche Leclerc</button>
       </form>
       <div id="leclerc-unblock" class="hint card-highlight" hidden>
-        <div><strong>Action requise: captcha Leclerc</strong></div>
+        <div><strong>Blocage Leclerc: action requise</strong></div>
         <div class="muted">
           Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
-          Utilisez en priorité le lien HTTPS (port 5801), avec un fallback HTTP (port 5800).
-        </div>
-        <div class="warning">
-          Safari bloque parfois http, utilisez HTTPS.
+          Firefox est recommandé.
         </div>
         <div class="actions">
           <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
             Ouvrir Leclerc (HTTPS)
-          </a>
-          <a id="leclerc-unblock-link-https" class="button-link secondary" target="_blank" rel="noopener">
-            Ouvrir Leclerc (HTTP)
           </a>
           <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
         </div>
@@ -82,11 +76,7 @@
     <a id="mobile-unblock" class="button-link" target="_blank" rel="noopener">
       Débloquer Leclerc (HTTPS)
     </a>
-    <a id="mobile-unblock-https" class="button-link secondary" target="_blank" rel="noopener">
-      Débloquer Leclerc (HTTP)
-    </a>
     <button type="button" id="mobile-retry">Relancer</button>
-    <div class="warning">Safari bloque parfois http, utilisez HTTPS.</div>
   </div>
 
   <script>
@@ -96,19 +86,17 @@
     const jobStatus = document.getElementById('job-status');
     const jobResults = document.getElementById('job-results');
     const host = window.location.hostname;
-    const leclercGuiHttpUrl = `http://${host}:5800/`;
     const leclercGuiHttpsUrl = `https://${host}:5801/`;
     const leclercUnblock = document.getElementById('leclerc-unblock');
     const leclercUnblockLink = document.getElementById('leclerc-unblock-link');
-    const leclercUnblockLinkHttps = document.getElementById('leclerc-unblock-link-https');
     const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
     const mobileActions = document.getElementById('mobile-actions');
     const mobileUnblock = document.getElementById('mobile-unblock');
-    const mobileUnblockHttps = document.getElementById('mobile-unblock-https');
     const mobileRetry = document.getElementById('mobile-retry');
     let timeout;
     let poller;
     let currentJobId;
+    let lastQuery;
 
     async function setLeclercGuiActive(active) {
       await fetch('/leclerc/gui/active', {
@@ -134,11 +122,9 @@
     }
 
     leclercUnblockLink.href = leclercGuiHttpsUrl;
-    leclercUnblockLinkHttps.href = leclercGuiHttpUrl;
     mobileUnblock.href = leclercGuiHttpsUrl;
-    mobileUnblockHttps.href = leclercGuiHttpUrl;
 
-    [leclercUnblockLink, leclercUnblockLinkHttps, mobileUnblock, mobileUnblockHttps].forEach((link) => {
+    [leclercUnblockLink, mobileUnblock].forEach((link) => {
       link.addEventListener('click', () => notifyLeclercGuiActive(true));
     });
     async function handleLeclercDone() {
@@ -159,16 +145,24 @@
         if (!resp.ok) {
           throw new Error('Retry failed');
         }
-        jobStatus.innerHTML = `
-          <strong>Job #${currentJobId}</strong>
-          <span class="status-badge status-running">RUNNING</span>
-        `;
-        poller = setInterval(async () => {
-          const done = await pollJob(currentJobId);
-          if (done) {
-            clearInterval(poller);
-          }
-        }, 1000);
+        const data = await resp.json();
+        if (data.job_id) {
+          currentJobId = data.job_id;
+          jobStatus.innerHTML = `
+            <strong>Job #${currentJobId}</strong>
+            <span class="status-badge status-running">RUNNING</span>
+          `;
+          poller = setInterval(async () => {
+            const done = await pollJob(currentJobId);
+            if (done) {
+              clearInterval(poller);
+            }
+          }, 1000);
+          return;
+        }
+        if (lastQuery) {
+          await startSearch(lastQuery);
+        }
       } catch (error) {
         jobStatus.textContent = "Impossible de relancer la recherche.";
       } finally {
@@ -296,13 +290,7 @@
       return job.status === 'DONE' || job.status === 'FAILED' || job.status === 'BLOCKED';
     }
 
-    searchForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const query = search.value.trim();
-      if (!query) {
-        jobStatus.textContent = 'Veuillez saisir une recherche.';
-        return;
-      }
+    async function startSearch(query) {
       jobStatus.textContent = 'Création du job...';
       jobResults.innerHTML = '';
       if (poller) {
@@ -330,6 +318,17 @@
           clearInterval(poller);
         }
       }, 1000);
+    }
+
+    searchForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const query = search.value.trim();
+      if (!query) {
+        jobStatus.textContent = 'Veuillez saisir une recherche.';
+        return;
+      }
+      lastQuery = query;
+      await startSearch(query);
     });
   </script>
 </body>

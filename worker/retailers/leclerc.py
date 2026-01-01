@@ -4,13 +4,14 @@ import json
 import logging
 import os
 import time
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote_plus, urlparse
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
 SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
@@ -20,8 +21,8 @@ BASE_URL = os.getenv("LECLERC_BASE_URL", "https://www.e.leclerc/")
 LECLERC_PROFILE_DIR = Path(
     os.getenv("LECLERC_PROFILE_DIR", str(SESSIONS_DIR / "leclerc_profile"))
 )
-BLOCKED_URL_PATH = SESSIONS_DIR / "leclerc_last_blocked_url.txt"
-GUI_LOCK_PATH = SESSIONS_DIR / "leclerc_gui_active.lock"
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
+LECLERC_BACKEND_URL = os.getenv("LECLERC_BACKEND_URL", "http://backend:8000")
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
@@ -29,10 +30,13 @@ LECLERC_STORE_URL = os.getenv(
 
 
 def is_datadome_block(page_html: str) -> bool:
+    lowered = page_html.lower()
     return (
-        "captcha-delivery.com" in page_html
-        or "DataDome" in page_html
-        or "Access blocked" in page_html
+        "captcha-delivery.com" in lowered
+        or "datadome" in lowered
+        or "access blocked" in lowered
+        or "unusual activity" in lowered
+        or "captcha" in lowered
     )
 
 
@@ -40,17 +44,66 @@ def persistent_profile_exists(profile_dir: Path = LECLERC_PROFILE_DIR) -> bool:
     return profile_dir.exists()
 
 
-def set_blocked_url(url: str) -> None:
-    if not url:
-        return
-    BLOCKED_URL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = BLOCKED_URL_PATH.with_suffix(".tmp")
-    temp_path.write_text(url, encoding="utf-8")
-    temp_path.replace(BLOCKED_URL_PATH)
+def notify_backend_blocked(unblock_url: str | None, job_id: int | None = None) -> None:
+    payload = {"unblock_url": unblock_url, "job_id": job_id}
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{LECLERC_BACKEND_URL}/leclerc/unblock/blocked",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        response.read()
 
 
-def is_gui_active() -> bool:
-    return GUI_LOCK_PATH.exists()
+class SharedLeclercBrowser:
+    def __init__(self, cdp_url: str = LECLERC_CDP_URL) -> None:
+        self.cdp_url = cdp_url
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        self.logger = logging.getLogger(__name__)
+
+    def _ensure_playwright(self):
+        if self._playwright is None:
+            self._playwright = sync_playwright().start()
+        return self._playwright
+
+    def _ensure_browser(self):
+        if self._browser and self._browser.is_connected():
+            return self._browser
+        playwright = self._ensure_playwright()
+        self._browser = playwright.chromium.connect_over_cdp(self.cdp_url)
+        self._context = None
+        self._page = None
+        return self._browser
+
+    def _ensure_context(self):
+        browser = self._ensure_browser()
+        if self._context and self._context.pages is not None:
+            return self._context
+        self._context = browser.contexts[0] if browser.contexts else browser.new_context()
+        return self._context
+
+    def ensure_page(self) -> Page:
+        context = self._ensure_context()
+        if self._page and not self._page.is_closed():
+            return self._page
+        for page in context.pages:
+            if not page.is_closed():
+                self._page = page
+                return page
+        self._page = context.new_page()
+        return self._page
+
+
+_shared_browser = SharedLeclercBrowser()
+
+
+def ensure_page() -> Page:
+    return _shared_browser.ensure_page()
 
 
 class LeclercBlocked(RuntimeError):
@@ -97,6 +150,7 @@ class LeclercRetailer:
         *,
         log_dir: Path | None = None,
         sessions_dir: Path | None = None,
+        blocked_job_id: int | None = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         retries: int = DEFAULT_RETRIES,
     ) -> None:
@@ -110,6 +164,7 @@ class LeclercRetailer:
         )
         self.use_persistent_profile = persistent_profile_exists(self.profile_dir)
         self.logger = logging.getLogger(__name__)
+        self.blocked_job_id = blocked_job_id
 
     def _timestamp(self) -> int:
         return int(time.time())
@@ -533,11 +588,10 @@ class LeclercRetailer:
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
                         blocked_url = blocked_paths.get("blocked_url")
-                        if blocked_url:
-                            try:
-                                set_blocked_url(blocked_url)
-                            except Exception:
-                                self.logger.exception("Failed to persist blocked URL")
+                        try:
+                            notify_backend_blocked(blocked_url, self.blocked_job_id)
+                        except Exception:
+                            self.logger.exception("Failed to notify Leclerc blocked state")
                         blocked_paths["network_log"] = str(network_log)
                         blocked_paths["instruction"] = (
                             "Ouvrir Leclerc GUI pour créer/rafraîchir la session."
@@ -556,11 +610,10 @@ class LeclercRetailer:
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
                         blocked_url = blocked_paths.get("blocked_url")
-                        if blocked_url:
-                            try:
-                                set_blocked_url(blocked_url)
-                            except Exception:
-                                self.logger.exception("Failed to persist blocked URL")
+                        try:
+                            notify_backend_blocked(blocked_url, self.blocked_job_id)
+                        except Exception:
+                            self.logger.exception("Failed to notify Leclerc blocked state")
                         blocked_paths["network_log"] = str(network_log)
                         blocked_paths["instruction"] = (
                             "Ouvrir Leclerc GUI pour créer/rafraîchir la session."

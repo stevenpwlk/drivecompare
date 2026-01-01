@@ -11,9 +11,11 @@ import schedule
 from playwright.sync_api import sync_playwright
 
 from db import (
+    delete_key_value,
     enqueue_job,
     fetch_all,
     fetch_one,
+    get_key_value,
     mark_job_retrying,
     mark_job_running,
     set_key_value,
@@ -188,7 +190,7 @@ def handle_retailer_search(job):
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    if leclerc.is_gui_active():
+    if get_key_value("leclerc_gui_active") == "1":
         result = {
             "items": [],
             "reason": "GUI_ACTIVE",
@@ -199,59 +201,50 @@ def handle_retailer_search(job):
         update_job(job["id"], "FAILED", result=result, error="GUI_ACTIVE")
         return
 
-    with sync_playwright() as p:
-        leclerc.LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        cdp_ok, cdp_payload = check_leclerc_cdp_health()
-        if not cdp_ok:
-            logging.error("Leclerc CDP unavailable: %s", cdp_payload.get("message"))
-            result = {
-                "items": [],
-                "reason": "LECLERC_CDP_UNAVAILABLE",
-                "debug": {
-                    "instruction": "Ouvrir Leclerc (déblocage).",
-                    "cdp_health": cdp_payload,
-                },
-            }
-            update_job(
-                job["id"],
-                "FAILED",
-                result=result,
-                error="Leclerc GUI/CDP non prêt",
-            )
-            return
-        ws_endpoint = None
-        if cdp_payload.get("version"):
-            ws_endpoint = cdp_payload["version"].get("webSocketDebuggerUrl")
-        logging.info("CDP ready%s", f" (ws: {ws_endpoint})" if ws_endpoint else "")
-        browser = p.chromium.connect_over_cdp(LECLERC_CDP_URL)
-        logging.info("connect_over_cdp success")
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.new_page()
-        try:
-            retailer = leclerc.LeclercRetailer(
-                page,
-                log_dir=LOG_DIR,
-                sessions_dir=SESSIONS_DIR,
-            )
-            result = retailer.search(query, account_type=account_type, limit=limit)
-        except leclerc.LeclercBlocked as error:
-            logging.warning("Leclerc blocked: %s", error.reason)
-            blocked = True
-            result = {
-                "items": [],
-                "reason": error.reason,
-                "debug": error.artifacts,
-            }
-            error_message = error.reason
-        except Exception as error:
-            logging.exception("Leclerc search failed")
-            error_message = str(error)
-        finally:
-            if not blocked:
-                try:
-                    browser.close()
-                except Exception:
-                    logging.exception("Failed to disconnect from Leclerc CDP")
+    leclerc.LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    cdp_ok, cdp_payload = check_leclerc_cdp_health()
+    if not cdp_ok:
+        logging.error("Leclerc CDP unavailable: %s", cdp_payload.get("message"))
+        result = {
+            "items": [],
+            "reason": "LECLERC_CDP_UNAVAILABLE",
+            "debug": {
+                "instruction": "Ouvrir Leclerc (déblocage).",
+                "cdp_health": cdp_payload,
+            },
+        }
+        update_job(
+            job["id"],
+            "FAILED",
+            result=result,
+            error="Leclerc GUI/CDP non prêt",
+        )
+        return
+    ws_endpoint = None
+    if cdp_payload.get("version"):
+        ws_endpoint = cdp_payload["version"].get("webSocketDebuggerUrl")
+    logging.info("CDP ready%s", f" (ws: {ws_endpoint})" if ws_endpoint else "")
+    page = leclerc.ensure_page()
+    try:
+        retailer = leclerc.LeclercRetailer(
+            page,
+            log_dir=LOG_DIR,
+            sessions_dir=SESSIONS_DIR,
+            blocked_job_id=job["id"],
+        )
+        result = retailer.search(query, account_type=account_type, limit=limit)
+    except leclerc.LeclercBlocked as error:
+        logging.warning("Leclerc blocked: %s", error.reason)
+        blocked = True
+        result = {
+            "items": [],
+            "reason": error.reason,
+            "debug": error.artifacts,
+        }
+        error_message = error.reason
+    except Exception as error:
+        logging.exception("Leclerc search failed")
+        error_message = str(error)
 
     if error_message:
         status = "BLOCKED" if error_message == "DATADOME_BLOCKED" else "FAILED"
@@ -266,15 +259,20 @@ def handle_retailer_search(job):
                 result=result,
                 error=error_message,
             )
-            set_key_value("blocked_job_id", str(job["id"]))
+            set_key_value("leclerc_blocked_job_id", str(job["id"]))
             if blocked_url:
-                set_key_value("blocked_url", blocked_url)
-            set_key_value("blocked_reason", error_message)
-            set_key_value("blocked_at", blocked_at)
+                set_key_value("leclerc_unblock_url", blocked_url)
+            set_key_value("leclerc_blocked", "1")
+            set_key_value("leclerc_blocked_reason", error_message)
+            set_key_value("leclerc_blocked_at", blocked_at)
         else:
             update_job(job["id"], status, result=result, error=error_message)
     else:
         update_job(job["id"], "DONE", result=result)
+        set_key_value("leclerc_blocked", "0")
+        delete_key_value("leclerc_unblock_url")
+        delete_key_value("leclerc_blocked_reason")
+        delete_key_value("leclerc_blocked_at")
 
 
 def process_job(job):
