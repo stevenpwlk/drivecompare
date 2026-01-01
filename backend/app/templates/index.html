@@ -18,12 +18,12 @@
         </label>
         <button type="submit">Lancer la recherche Leclerc</button>
       </form>
-      <div class="hint">
+      <div id="leclerc-unblock" class="hint" hidden>
         <div><strong>Session Leclerc (mobile)</strong></div>
-        <div>
-          1) <a href="{{ leclerc_gui_url }}" target="_blank" rel="noopener">Ouvrir Leclerc (session)</a>
-          2) Se connecter / passer le blocage 3) Revenir ici et relancer la recherche
+        <div class="muted">
+          Ouvrez le navigateur distant, passez le captcha/login, revenez et relancez la recherche.
         </div>
+        <button type="button" id="leclerc-unblock-button">Débloquer Leclerc</button>
       </div>
       <div id="job-status" class="muted"></div>
       <div id="job-results"></div>
@@ -72,9 +72,19 @@
     const results = document.getElementById('results');
     const jobStatus = document.getElementById('job-status');
     const jobResults = document.getElementById('job-results');
-    const leclercGuiUrl = "{{ leclerc_gui_url }}";
+    const host = window.location.hostname;
+    const leclercGuiUrl = `https://${host}:5801/`;
+    const leclercUnblock = document.getElementById('leclerc-unblock');
+    const leclercUnblockButton = document.getElementById('leclerc-unblock-button');
     let timeout;
     let poller;
+    let lastAutoOpenJobId = null;
+
+    function openLeclercGui() {
+      window.open(leclercGuiUrl, "_blank", "noopener");
+    }
+
+    leclercUnblockButton.addEventListener('click', openLeclercGui);
 
     search.addEventListener('input', () => {
       clearTimeout(timeout);
@@ -95,6 +105,7 @@
     function renderJob(job) {
       jobStatus.innerHTML = `<strong>Job #${job.id}</strong> - ${job.status}`;
       if (job.status === 'DONE') {
+        leclercUnblock.hidden = true;
         const items = (job.result?.items || []).map(item => {
           const price = item.price != null ? `${item.price} €` : 'N/A';
           const unitPrice = item.unit_price != null ? `${item.unit_price} ${item.unit || ''}` : '';
@@ -119,22 +130,27 @@
         ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
         if (reason === 'DATADOME_BLOCKED') {
           const instruction = debug.instruction || '';
+          leclercUnblock.hidden = false;
+          if (lastAutoOpenJobId !== job.id) {
+            openLeclercGui();
+            lastAutoOpenJobId = job.id;
+          }
           jobResults.innerHTML = `
             <div class="muted">
-              Leclerc a bloqué l'accès automatique (DataDome).
-              <a href="${leclercGuiUrl}" target="_blank" rel="noopener">Ouvrir Leclerc (session)</a>
-              puis relancer la recherche.
+              Leclerc a bloqué l'accès automatique (DataDome). Le navigateur distant va s'ouvrir.
             </div>
             ${instruction ? `<div class="muted">${instruction}</div>` : ''}
             ${details ? `<div class="muted">${details}</div>` : ''}
           `;
         } else {
+          leclercUnblock.hidden = true;
           jobResults.innerHTML = `
             <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
             ${details ? `<div class="muted">${details}</div>` : ''}
           `;
         }
       } else {
+        leclercUnblock.hidden = true;
         jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
       }
     }

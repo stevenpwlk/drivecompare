@@ -35,14 +35,7 @@ def is_datadome_block(page_html: str) -> bool:
 
 
 def persistent_profile_exists(profile_dir: Path = LECLERC_PROFILE_DIR) -> bool:
-    if not profile_dir.exists():
-        return False
-    candidates = [
-        profile_dir / "Default" / "Preferences",
-        profile_dir / "Default" / "Cookies",
-        profile_dir / "Default" / "Network" / "Cookies",
-    ]
-    return any(path.exists() for path in candidates)
+    return profile_dir.exists()
 
 
 class LeclercBlocked(RuntimeError):
