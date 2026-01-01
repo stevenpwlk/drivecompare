@@ -28,6 +28,9 @@
           <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
             Ouvrir Leclerc (déblocage)
           </a>
+          <a id="leclerc-unblock-link-https" class="button-link secondary" target="_blank" rel="noopener">
+            Ouvrir Leclerc (HTTPS)
+          </a>
           <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
         </div>
       </div>
@@ -75,6 +78,9 @@
     <a id="mobile-unblock" class="button-link" target="_blank" rel="noopener">
       Débloquer Leclerc
     </a>
+    <a id="mobile-unblock-https" class="button-link secondary" target="_blank" rel="noopener">
+      Débloquer Leclerc (HTTPS)
+    </a>
     <button type="button" id="mobile-retry">Relancer</button>
   </div>
 
@@ -85,12 +91,15 @@
     const jobStatus = document.getElementById('job-status');
     const jobResults = document.getElementById('job-results');
     const host = window.location.hostname;
-    const leclercGuiUrl = `http://${host}:5801/`;
+    const leclercGuiHttpUrl = `http://${host}:5800/`;
+    const leclercGuiHttpsUrl = `https://${host}:5801/`;
     const leclercUnblock = document.getElementById('leclerc-unblock');
     const leclercUnblockLink = document.getElementById('leclerc-unblock-link');
+    const leclercUnblockLinkHttps = document.getElementById('leclerc-unblock-link-https');
     const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
     const mobileActions = document.getElementById('mobile-actions');
     const mobileUnblock = document.getElementById('mobile-unblock');
+    const mobileUnblockHttps = document.getElementById('mobile-unblock-https');
     const mobileRetry = document.getElementById('mobile-retry');
     let timeout;
     let poller;
@@ -119,10 +128,12 @@
       });
     }
 
-    leclercUnblockLink.href = leclercGuiUrl;
-    mobileUnblock.href = leclercGuiUrl;
+    leclercUnblockLink.href = leclercGuiHttpUrl;
+    leclercUnblockLinkHttps.href = leclercGuiHttpsUrl;
+    mobileUnblock.href = leclercGuiHttpUrl;
+    mobileUnblockHttps.href = leclercGuiHttpsUrl;
 
-    [leclercUnblockLink, mobileUnblock].forEach((link) => {
+    [leclercUnblockLink, leclercUnblockLinkHttps, mobileUnblock, mobileUnblockHttps].forEach((link) => {
       link.addEventListener('click', () => notifyLeclercGuiActive(true));
     });
     async function retryJob(jobId) {
