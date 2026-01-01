@@ -141,6 +141,7 @@ def handle_retailer_search(job):
     limit = int(payload.get("limit") or 20)
     result: dict[str, Any] = {"items": [], "debug": {}}
     error_message: str | None = None
+    blocked = False
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,11 +158,9 @@ def handle_retailer_search(job):
 
     with sync_playwright() as p:
         leclerc.LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(leclerc.LECLERC_PROFILE_DIR),
-            headless=True,
-        )
-        page = context.new_page()
+        browser = p.chromium.connect_over_cdp("http://leclerc-gui:9222")
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = context.pages[0] if context.pages else context.new_page()
         try:
             retailer = leclerc.LeclercRetailer(
                 page,
@@ -171,6 +170,7 @@ def handle_retailer_search(job):
             result = retailer.search(query, account_type=account_type, limit=limit)
         except leclerc.LeclercBlocked as error:
             logging.warning("Leclerc blocked: %s", error.reason)
+            blocked = True
             result = {
                 "items": [],
                 "reason": error.reason,
@@ -181,10 +181,15 @@ def handle_retailer_search(job):
             logging.exception("Leclerc search failed")
             error_message = str(error)
         finally:
-            context.close()
+            if not blocked:
+                try:
+                    browser.close()
+                except Exception:
+                    logging.exception("Failed to disconnect from Leclerc CDP")
 
     if error_message:
-        update_job(job["id"], "FAILED", result=result, error=error_message)
+        status = "BLOCKED" if error_message == "DATADOME_BLOCKED" else "FAILED"
+        update_job(job["id"], status, result=result, error=error_message)
     else:
         update_job(job["id"], "DONE", result=result)
 

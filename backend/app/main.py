@@ -236,6 +236,25 @@ def get_job(job_id: int):
     return JSONResponse(job)
 
 
+@app.post("/jobs/{job_id}/retry")
+def retry_job(job_id: int):
+    job = fetch_one(
+        """
+        SELECT id, type, status, payload
+        FROM jobs
+        WHERE id = ?
+        """,
+        (job_id,),
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] not in {"FAILED", "BLOCKED"}:
+        raise HTTPException(status_code=409, detail="Job is not retryable")
+    payload = json.loads(job["payload"] or "{}")
+    new_job_id = insert_job(job["type"], payload)
+    return {"job_id": new_job_id, "status": "PENDING"}
+
+
 @app.get("/leclerc/unblock")
 def leclerc_unblock():
     try:
@@ -253,6 +272,13 @@ def set_leclerc_gui_active(payload: dict[str, Any]):
     LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     set_gui_active(active)
     return {"active": active}
+
+
+@app.post("/leclerc/unblock/done")
+def leclerc_unblock_done():
+    clear_blocked_url()
+    set_gui_active(False)
+    return {"ok": True}
 
 
 @app.post("/leclerc/blocked/clear")
