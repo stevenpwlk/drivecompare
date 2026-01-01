@@ -79,12 +79,14 @@ Dans ce cas, la recherche échoue en `BLOCKED` avec la raison `DATADOME_BLOCKED`
 
 ### Session Leclerc via GUI (mobile-first)
 
-Le worker pilote **le même navigateur** que l'UI Leclerc (Chromium) via CDP. Pour créer une session valide sur mobile (LAN):
+Le worker pilote **le même navigateur** que l'UI Leclerc (Chromium) via CDP. Flux humain-in-the-loop: le worker tente l'automatisation, signale un blocage au backend, l'utilisateur ouvre l'UI distante uniquement pour résoudre le captcha/login, puis le worker relance automatiquement via le même Chromium partagé.
+
+Pour créer une session valide sur mobile (LAN):
 
 1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 2. Lancer une recherche Leclerc.
-3. Si DataDome bloque, l'app affiche des liens pour ouvrir `http://<IP>:5800` (HTTP) ou `https://<IP>:5801` (HTTPS) dans le navigateur distant.
-4. Tapez **Ouvrir Leclerc (déblocage)** pour ouvrir le navigateur distant (tap utilisateur requis sur mobile).
+3. Si DataDome bloque, l'app affiche un lien pour ouvrir `https://<IP>:5801` (HTTPS) dans le navigateur distant.
+4. Tapez **Ouvrir Leclerc (HTTPS)** pour ouvrir le navigateur distant (tap utilisateur requis sur mobile).
 5. Dans le navigateur distant:
    - Passer le captcha/login.
    - Sélectionner le magasin si demandé (l'URL par défaut est `LECLERC_STORE_URL`).
@@ -92,18 +94,15 @@ Le worker pilote **le même navigateur** que l'UI Leclerc (Chromium) via CDP. Po
 
 La session est persistée dans `./sessions/leclerc_profile` et réutilisée par le worker via CDP.
 Si le verrou `GUI_ACTIVE` est actif, le worker refuse le job Leclerc pour éviter la corruption du profil.
-L'état Leclerc est stocké dans des fichiers `/sessions`:
-
-- `leclerc_gui_active.lock`
-- `leclerc_last_blocked_url.txt`
+L'état Leclerc est stocké en base (table `key_value`).
 
 > Note: le presse-papier automatique peut nécessiter HTTPS côté navigateur distant. Sinon, utilisez le panneau clipboard si présent.
 
 ### Configuration leclerc-gui (Chromium)
 
-Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS) et `http://<IP>:5800` (HTTP).
-Il démarre en mode "app" sur `/leclerc/unblock`, qui redirige automatiquement vers la dernière URL bloquée
-DataDome ou vers `LECLERC_STORE_URL`. Un port CDP interne est activé (9222) pour que le worker pilote le même navigateur.
+Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS).
+Il démarre en mode "app" sur `/leclerc/unblock`, qui affiche une page "kiosk" et redirige automatiquement vers la dernière URL bloquée
+DataDome quand un blocage est détecté. Un port CDP interne est activé (9222) pour que le worker pilote le même navigateur.
 Le worker partage le namespace réseau du service `leclerc-gui`, ce qui permet d'accéder au CDP via `http://127.0.0.1:9222`
 même si Chromium écoute uniquement sur le loopback.
 Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
@@ -139,11 +138,24 @@ docker compose exec leclerc-gui ss -lntp | grep 9222
 docker compose exec leclerc-gui curl -s http://127.0.0.1:9222/json/version
 ```
 
-### Tests CDP (compose)
+### Diagnostic Leclerc
+
+- Vérifier le CDP dans le namespace partagé:
 
 ```bash
-docker compose exec leclerc-gui curl -sS http://127.0.0.1:9222/json/version
-docker compose exec worker python -c "import socket; s=socket.socket(); s.connect(('127.0.0.1',9222)); print('ok')"
+docker compose exec worker bash -lc 'python - <<PY
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read()[:120])
+PY'
+```
+
+- Vérifier que l'UI Kasm est en HTTPS:
+  - Ouvrir `https://<IP>:5801`
+
+- Vérifier l'état backend:
+
+```bash
+curl -s http://127.0.0.1:8000/leclerc/unblock/status
 ```
 
 ### Dépannage

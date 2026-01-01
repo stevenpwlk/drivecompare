@@ -4,16 +4,18 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import execute, fetch_all, fetch_one, insert_job, request_job_retry
 from .leclerc_state import (
     DEFAULT_LECLERC_FALLBACK_URL,
-    clear_blocked_url,
-    get_blocked_url,
+    clear_blocked_state,
+    get_blocked_job_id,
+    get_blocked_state,
     is_gui_active,
+    set_blocked_state,
     set_gui_active,
 )
 
@@ -25,7 +27,6 @@ LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
 )
-LECLERC_PROFILE_DIR = Path(os.getenv("LECLERC_PROFILE_DIR", "/sessions/leclerc_profile"))
 LECLERC_CDP_HEALTH_PATH = Path(os.getenv("LECLERC_CDP_HEALTH_PATH", "/sessions/leclerc_cdp_health.json"))
 
 
@@ -257,49 +258,70 @@ def retry_job(job_id: int):
 
 
 @app.get("/leclerc/unblock")
-def leclerc_unblock():
-    try:
-        blocked_url = get_blocked_url()
-        target_url = blocked_url or LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
-        return RedirectResponse(target_url, status_code=302)
-    except Exception:
-        fallback = LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
-        return RedirectResponse(fallback, status_code=302)
+def leclerc_unblock(request: Request):
+    fallback = LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
+    return templates.TemplateResponse(
+        "leclerc_unblock.html",
+        {
+            "request": request,
+            "fallback_url": fallback,
+        },
+    )
+
+
+@app.get("/leclerc/unblock/status")
+def leclerc_unblock_status():
+    blocked, unblock_url, updated_at = get_blocked_state()
+    return {
+        "blocked": blocked,
+        "unblock_url": unblock_url,
+        "updated_at": updated_at,
+    }
+
+
+@app.post("/leclerc/unblock/blocked")
+def leclerc_unblock_blocked(payload: dict[str, Any]):
+    unblock_url = payload.get("unblock_url")
+    blocked_job_id = payload.get("job_id")
+    set_blocked_state(
+        True,
+        unblock_url=unblock_url,
+        blocked_job_id=str(blocked_job_id) if blocked_job_id else None,
+    )
+    return {"ok": True}
 
 
 @app.post("/leclerc/gui/active")
 def set_leclerc_gui_active(payload: dict[str, Any]):
     active = bool(payload.get("active"))
-    LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     set_gui_active(active)
     return {"active": active}
 
 
 @app.post("/leclerc/unblock/done")
 def leclerc_unblock_done(payload: dict[str, Any]):
-    job_id = payload.get("job_id")
-    if not job_id:
-        raise HTTPException(status_code=400, detail="job_id is required")
-    job = fetch_one("SELECT id, status FROM jobs WHERE id = ?", (job_id,))
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job["status"] not in {"BLOCKED", "FAILED"}:
-        raise HTTPException(status_code=409, detail="Job is not retryable")
-    request_job_retry(job_id)
-    clear_blocked_url()
+    job_id = payload.get("job_id") or get_blocked_job_id()
+    retry_job_id = None
+    if job_id:
+        job = fetch_one("SELECT id, status FROM jobs WHERE id = ?", (job_id,))
+        if job and job["status"] in {"BLOCKED", "FAILED"}:
+            request_job_retry(job_id)
+            retry_job_id = job_id
+    clear_blocked_state()
     set_gui_active(False)
-    return {"ok": True, "job_id": job_id}
+    return {"ok": True, "job_id": retry_job_id}
 
 
 @app.post("/leclerc/blocked/clear")
 def clear_leclerc_blocked():
-    clear_blocked_url()
+    clear_blocked_state()
     return {"cleared": True}
 
 
 @app.get("/leclerc/gui/status")
 def get_leclerc_gui_status():
-    return {"active": is_gui_active(), "blocked_url": get_blocked_url()}
+    _, unblock_url, updated_at = get_blocked_state()
+    return {"active": is_gui_active(), "blocked_url": unblock_url, "updated_at": updated_at}
 
 
 @app.get("/leclerc/cdp/health")

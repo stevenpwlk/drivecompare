@@ -37,6 +37,18 @@ def ensure_job_columns() -> None:
             conn.execute("ALTER TABLE jobs ADD COLUMN retry_requested INTEGER NOT NULL DEFAULT 0")
 
 
+def ensure_key_value_table() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS key_value (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+
+
 def fetch_one(query: str, params: tuple = ()):
     with get_conn() as conn:
         cur = conn.execute(query, params)
@@ -148,3 +160,4 @@ def delete_key_value(key: str) -> None:
 
 
 ensure_job_columns()
+ensure_key_value_table()

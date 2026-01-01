@@ -32,7 +32,6 @@ services:
     image: lscr.io/linuxserver/chromium:latest
     ports:
       - "5801:3001"
-      - "5800:3000"
     volumes:
       - ./sessions/leclerc_profile:/config
     environment:
@@ -45,6 +44,9 @@ services:
       - PASSWORD
     shm_size: "1gb"
     restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9222/json/version"]
       interval: 5s

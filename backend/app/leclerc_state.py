@@ -1,57 +1,61 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from datetime import datetime, timezone
 
-SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
-BLOCKED_URL_PATH = SESSIONS_DIR / "leclerc_last_blocked_url.txt"
-GUI_LOCK_PATH = SESSIONS_DIR / "leclerc_gui_active.lock"
+from .db import delete_key_value, get_key_value, set_key_value
+
 DEFAULT_LECLERC_FALLBACK_URL = "https://fd6-courses.leclercdrive.fr/"
 
-
-def _atomic_write(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(value, encoding="utf-8")
-    tmp_path.replace(path)
-
-
-def set_blocked_url(url: str) -> None:
-    if not url:
-        return
-    _atomic_write(BLOCKED_URL_PATH, url)
+KEY_BLOCKED = "leclerc_blocked"
+KEY_UNBLOCK_URL = "leclerc_unblock_url"
+KEY_BLOCKED_AT = "leclerc_blocked_at"
+KEY_BLOCKED_JOB_ID = "leclerc_blocked_job_id"
+KEY_GUI_ACTIVE = "leclerc_gui_active"
 
 
-def get_blocked_url() -> str | None:
-    try:
-        if BLOCKED_URL_PATH.exists():
-            return BLOCKED_URL_PATH.read_text(encoding="utf-8").strip() or None
-    except Exception:
-        return None
-    return None
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def clear_blocked_url() -> None:
-    try:
-        if BLOCKED_URL_PATH.exists():
-            BLOCKED_URL_PATH.unlink()
-    except Exception:
-        return
+def set_blocked_state(
+    blocked: bool,
+    *,
+    unblock_url: str | None = None,
+    updated_at: str | None = None,
+    blocked_job_id: str | None = None,
+) -> None:
+    set_key_value(KEY_BLOCKED, "1" if blocked else "0")
+    set_key_value(KEY_BLOCKED_AT, updated_at or _utc_now())
+    if unblock_url:
+        set_key_value(KEY_UNBLOCK_URL, unblock_url)
+    elif not blocked:
+        delete_key_value(KEY_UNBLOCK_URL)
+    if blocked_job_id:
+        set_key_value(KEY_BLOCKED_JOB_ID, blocked_job_id)
+
+
+def get_blocked_state() -> tuple[bool, str | None, str | None]:
+    blocked_value = get_key_value(KEY_BLOCKED)
+    blocked = blocked_value == "1"
+    unblock_url = get_key_value(KEY_UNBLOCK_URL)
+    updated_at = get_key_value(KEY_BLOCKED_AT)
+    return blocked, unblock_url, updated_at
+
+
+def clear_blocked_state() -> None:
+    set_key_value(KEY_BLOCKED, "0")
+    delete_key_value(KEY_UNBLOCK_URL)
+    delete_key_value(KEY_BLOCKED_AT)
+    delete_key_value(KEY_BLOCKED_JOB_ID)
 
 
 def set_gui_active(active: bool) -> None:
-    if active:
-        _atomic_write(GUI_LOCK_PATH, "active")
-        return
-    try:
-        if GUI_LOCK_PATH.exists():
-            GUI_LOCK_PATH.unlink()
-    except Exception:
-        return
+    set_key_value(KEY_GUI_ACTIVE, "1" if active else "0")
 
 
 def is_gui_active() -> bool:
-    try:
-        return GUI_LOCK_PATH.exists()
-    except Exception:
-        return False
+    return get_key_value(KEY_GUI_ACTIVE) == "1"
+
+
+def get_blocked_job_id() -> str | None:
+    return get_key_value(KEY_BLOCKED_JOB_ID)
