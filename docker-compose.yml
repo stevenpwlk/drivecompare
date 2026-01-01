@@ -17,20 +17,20 @@ services:
     init: true
     env_file:
       - .env
+    network_mode: "service:leclerc-gui"
     volumes:
       - ./data:/data
       - ./logs:/logs
       - ./sessions:/sessions
     depends_on:
       - backend
+      - leclerc-gui
 
   leclerc-gui:
     image: lscr.io/linuxserver/chromium:latest
     ports:
       - "5801:3001"
       - "5800:3000"
-    expose:
-      - "9222"
     volumes:
       - ./sessions/leclerc_profile:/config
     environment:
@@ -38,7 +38,7 @@ services:
       - PUID=1000
       - PGID=1000
       - UMASK=022
-      - CHROME_CLI=--app=http://backend:8000/leclerc/unblock --no-first-run --no-default-browser-check --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222
+      - CHROME_CLI=--app=http://backend:8000/leclerc/unblock --no-first-run --no-default-browser-check --remote-debugging-port=9222
       - CUSTOM_USER
       - PASSWORD
     shm_size: "1gb"

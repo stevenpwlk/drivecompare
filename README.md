@@ -104,6 +104,8 @@ L'état Leclerc est stocké dans des fichiers `/sessions`:
 Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS) et `http://<IP>:5800` (HTTP).
 Il démarre en mode "app" sur `/leclerc/unblock`, qui redirige automatiquement vers la dernière URL bloquée
 DataDome ou vers `LECLERC_STORE_URL`. Un port CDP interne est activé (9222) pour que le worker pilote le même navigateur.
+Le worker partage le namespace réseau du service `leclerc-gui`, ce qui permet d'accéder au CDP via `http://127.0.0.1:9222`
+même si Chromium écoute uniquement sur le loopback.
 Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
 
 - `CUSTOM_USER`
@@ -135,6 +137,13 @@ Vérifier que Chromium écoute bien sur le port CDP (9222) dans le conteneur:
 ```bash
 docker compose exec leclerc-gui ss -lntp | grep 9222
 docker compose exec leclerc-gui curl -s http://127.0.0.1:9222/json/version
+```
+
+### Tests CDP (compose)
+
+```bash
+docker compose exec leclerc-gui curl -sS http://127.0.0.1:9222/json/version
+docker compose exec worker python -c "import socket; s=socket.socket(); s.connect(('127.0.0.1',9222)); print('ok')"
 ```
 
 ### Dépannage

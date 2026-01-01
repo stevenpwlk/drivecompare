@@ -23,6 +23,7 @@
         <div><strong>Action requise: captcha Leclerc</strong></div>
         <div class="muted">
           Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
+          Utilisez en priorité le lien HTTP (port 5800) pour mobile.
         </div>
         <div class="actions">
           <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
@@ -247,13 +248,15 @@
           debug.error_png ? `Screenshot: ${debug.error_png}` : null,
           debug.error_html ? `HTML: ${debug.error_html}` : null,
         ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
-        if (job.status === 'BLOCKED' || reason === 'DATADOME_BLOCKED') {
+        if (job.status === 'BLOCKED' || reason === 'DATADOME_BLOCKED' || reason === 'LECLERC_CDP_UNAVAILABLE') {
           const instruction = debug.instruction || '';
           leclercUnblock.hidden = false;
           mobileActions.hidden = false;
           jobResults.innerHTML = `
             <div class="muted">
-              Leclerc a bloqué l'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer (captcha/login).
+              ${reason === 'LECLERC_CDP_UNAVAILABLE'
+                ? 'Le navigateur Leclerc n\'est pas prêt. Ouvrez la GUI pour lancer Chromium, puis relancez.'
+                : 'Leclerc a bloqué l\'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer (captcha/login).'}
             </div>
             ${instruction ? `<div class="muted">${instruction}</div>` : ''}
             ${details ? `<div class="muted">${details}</div>` : ''}
