@@ -31,16 +31,23 @@ def index(request: Request):
         },
     )
 
+@app.get("/leclerc/unblock", response_class=HTMLResponse)
+def leclerc_unblock_page(request: Request):
+    return templates.TemplateResponse(
+        "unblock.html",
+        {
+            "request": request,
+            "leclerc_gui_port": LECLERC_GUI_PORT,
+        },
+    )
 
-@app.post("/jobs/retailer-search")
-def retailer_search(payload: dict[str, Any]):
-    retailer = (payload.get("retailer") or "leclerc").lower()
-    if retailer != "leclerc":
-        raise HTTPException(status_code=400, detail="Only leclerc is supported")
+
+@app.post("/jobs/leclerc-search")
+def leclerc_search(payload: dict[str, Any]):
     query = (payload.get("query") or payload.get("q") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
-    job_id = create_job(retailer, query)
+    job_id = create_job("leclerc", query)
     return {"job_id": job_id, "status": "QUEUED"}
 
 
@@ -79,7 +86,7 @@ def leclerc_unblock_status():
         return {
             "blocked": False,
             "job_id": None,
-            "url": None,
+            "unblock_url": None,
             "reason": None,
             "done": False,
             "updated_at": None,
@@ -87,7 +94,7 @@ def leclerc_unblock_status():
     return {
         "blocked": bool(state["active"]),
         "job_id": state["job_id"],
-        "url": state["url"],
+        "unblock_url": state["url"],
         "reason": state["reason"],
         "done": bool(state["done"]),
         "updated_at": state["updated_at"],

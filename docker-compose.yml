@@ -27,7 +27,7 @@ services:
       - .env
     environment:
       - LECLERC_BACKEND_URL=http://backend:8000
-      - LECLERC_CDP_URL=http://leclerc-browser:9222
+      - LECLERC_CDP_URL=http://leclerc-gui:9222
     volumes:
       - ./data:/data
       - ./logs:/logs
@@ -35,7 +35,7 @@ services:
     depends_on:
       backend:
         condition: service_started
-      leclerc-browser:
+      leclerc-gui:
         condition: service_healthy
     healthcheck:
       test:
@@ -47,7 +47,7 @@ services:
       timeout: 3s
       retries: 5
 
-  leclerc-browser:
+  leclerc-gui:
     build: ./browser
     ports:
       - "5801:5801"
@@ -61,7 +61,7 @@ services:
     shm_size: "1gb"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9222/json/version"]
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:5801/ > /dev/null"]
       interval: 5s
       timeout: 3s
       retries: 10

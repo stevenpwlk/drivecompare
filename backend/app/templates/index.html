@@ -113,7 +113,7 @@
         setStatus(`Job #${job.id}`, 'status-blocked');
         renderResults(job.result?.items || []);
         unblockPanel.hidden = false;
-        unblockDetails.textContent = job.error || job.result?.reason || '';
+        renderUnblockDetails(job.error || job.result?.reason, job.result?.blocked_url);
         return;
       }
       if (job.status === 'SUCCESS') {
@@ -127,9 +127,20 @@
         setStatus(`Job #${job.id}`, 'status-failed');
         renderResults(job.result?.items || []);
         unblockPanel.hidden = true;
-        unblockDetails.textContent = job.error || 'Erreur inconnue';
+        renderUnblockDetails(job.error || 'Erreur inconnue', null);
         clearInterval(pollTimer);
       }
+    }
+
+    function renderUnblockDetails(reason, url) {
+      const parts = [];
+      if (reason) {
+        parts.push(reason);
+      }
+      if (url) {
+        parts.push(`URL: ${url}`);
+      }
+      unblockDetails.textContent = parts.join(' • ');
     }
 
     async function pollUnblockState() {
@@ -141,7 +152,7 @@
       if (data.blocked && data.job_id) {
         currentJobId = data.job_id;
         unblockPanel.hidden = false;
-        unblockDetails.textContent = data.reason || '';
+        renderUnblockDetails(data.reason, data.unblock_url);
       }
     }
 
@@ -172,10 +183,10 @@
       }
       resultsEl.innerHTML = '';
       unblockPanel.hidden = true;
-      const resp = await fetch('/jobs/retailer-search', {
+      const resp = await fetch('/jobs/leclerc-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ retailer: 'leclerc', query }),
+        body: JSON.stringify({ query }),
       });
       if (!resp.ok) {
         setStatus('Impossible de lancer le job.', 'status-failed');
