@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS key_value (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 SEED_STORES = [

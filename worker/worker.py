@@ -8,7 +8,7 @@ from typing import Any
 import schedule
 from playwright.sync_api import sync_playwright
 
-from db import enqueue_job, fetch_all, fetch_one, mark_job_running, update_job
+from db import enqueue_job, fetch_all, fetch_one, mark_job_running, set_key_value, update_job
 from retailers import auchan, leclerc
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
@@ -144,23 +144,25 @@ def handle_retailer_search(job):
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    storage_path = SESSIONS_DIR / f"leclerc_{account_type}.json"
     leclerc_profile_dir = leclerc.LECLERC_PROFILE_DIR
-    use_persistent_profile = leclerc.persistent_profile_exists(leclerc_profile_dir)
+    gui_active_file = leclerc_profile_dir / ".gui_active"
+    if gui_active_file.exists():
+        result = {
+            "items": [],
+            "reason": "GUI_ACTIVE",
+            "debug": {
+                "instruction": "Fermez l'onglet GUI puis cliquez sur 'J'ai terminé'.",
+            },
+        }
+        update_job(job["id"], "FAILED", result=result, error="GUI_ACTIVE")
+        return
 
     with sync_playwright() as p:
-        browser = None
-        if use_persistent_profile:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(leclerc_profile_dir),
-                headless=True,
-            )
-        else:
-            browser = p.chromium.launch(headless=True)
-            context_kwargs = {}
-            if storage_path.exists():
-                context_kwargs["storage_state"] = str(storage_path)
-            context = browser.new_context(**context_kwargs)
+        leclerc_profile_dir.mkdir(parents=True, exist_ok=True)
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(leclerc_profile_dir),
+            headless=True,
+        )
         page = context.new_page()
         try:
             retailer = leclerc.LeclercRetailer(
@@ -171,6 +173,12 @@ def handle_retailer_search(job):
             result = retailer.search(query, account_type=account_type, limit=limit)
         except leclerc.LeclercBlocked as error:
             logging.warning("Leclerc blocked: %s", error.reason)
+            blocked_url = error.artifacts.get("blocked_url")
+            if blocked_url:
+                try:
+                    set_key_value("leclerc_blocked_url", blocked_url)
+                except Exception:
+                    logging.exception("Failed to persist blocked URL")
             result = {
                 "items": [],
                 "reason": error.reason,
@@ -181,14 +189,7 @@ def handle_retailer_search(job):
             logging.exception("Leclerc search failed")
             error_message = str(error)
         finally:
-            if not use_persistent_profile:
-                try:
-                    context.storage_state(path=str(storage_path))
-                except Exception:
-                    logging.exception("Failed to save Leclerc storage_state")
             context.close()
-            if browser:
-                browser.close()
 
     if error_message:
         update_job(job["id"], "FAILED", result=result, error=error_message)

@@ -145,6 +145,10 @@ class LeclercRetailer:
         screenshot_path = self.log_dir / f"leclerc_blocked_{timestamp}.png"
         html_path = self.log_dir / f"leclerc_blocked_{timestamp}.html"
         try:
+            blocked_url = self.page.url
+        except Exception:
+            blocked_url = None
+        try:
             self.page.screenshot(path=str(screenshot_path), full_page=True)
         except Exception:
             self.logger.exception("Failed to capture Leclerc blocked screenshot")
@@ -152,7 +156,10 @@ class LeclercRetailer:
             html_path.write_text(page_html, encoding="utf-8")
         except Exception:
             self.logger.exception("Failed to capture Leclerc blocked HTML")
-        return {"blocked_png": str(screenshot_path), "blocked_html": str(html_path)}
+        payload = {"blocked_png": str(screenshot_path), "blocked_html": str(html_path)}
+        if blocked_url:
+            payload["blocked_url"] = blocked_url
+        return payload
 
     @contextmanager
     def _network_capture(self, metadata: dict[str, Any] | None = None) -> Iterator[Path]:
