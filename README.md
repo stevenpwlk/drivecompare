@@ -6,7 +6,7 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
 
 - **backend (FastAPI)**: API + UI simple (recherche, statut job, actions de déblocage).
 - **worker (Playwright)**: exécute la recherche Leclerc, détecte les blocages, attend le "J'ai terminé".
-- **leclerc-browser**: Chromium avec GUI noVNC HTTPS + CDP (port 9222). Le worker pilote **le même profil**.
+- **leclerc-browser**: Chromium avec GUI noVNC HTTPS + CDP (port 9222). Le worker pilote **le même profil** (`/sessions/leclerc-profile`).
 - **SQLite**: base persistée dans `./data`.
 
 ## Comment ça marche (flow unblock)
@@ -19,7 +19,7 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
    - le worker ouvre l'URL bloquée dans le navigateur partagé.
 4. L'utilisateur ouvre `https://<IP>:5801`, résout le captcha/login.
 5. L'utilisateur clique **"J'ai terminé"** dans l'UI.
-6. Le worker reprend la navigation, collecte les résultats et passe le job en `SUCCEEDED`.
+6. Le worker reprend la navigation, collecte les résultats et passe le job en `SUCCESS`.
 
 ## Prérequis
 
@@ -42,7 +42,9 @@ docker compose up -d --build
 
 UI: `http://<IP>:8000`
 
-GUI Leclerc (HTTPS): `https://<IP>:5801`
+GUI Leclerc (HTTPS uniquement): `https://<IP>:5801`
+
+Sessions partagées: profil Chromium persisté dans `./sessions` (monté sur `/sessions/leclerc-profile`).
 
 ## Endpoints principaux
 
@@ -55,9 +57,10 @@ GUI Leclerc (HTTPS): `https://<IP>:5801`
 
 ## Debug / Observabilité
 
-- Logs worker: `./logs`
+- Logs worker: `./logs/leclerc`
   - `leclerc_blocked_*.png/html` lors de blocage
   - `leclerc_noresults_*.png/html` si aucune carte produit
+  - `leclerc_*_network.json` résumé réseau par échec
 - Health checks:
   - `GET http://<IP>:8000/health`
   - `GET http://<IP>:9000/ready`
@@ -67,6 +70,13 @@ GUI Leclerc (HTTPS): `https://<IP>:5801`
 
 ```bash
 ./tools/smoke_test.sh
+```
+
+## Scripts de debug
+
+```bash
+./tools/debug_cdp.sh
+./tools/unblock_status.sh
 ```
 
 ## Configuration (extraits)
@@ -80,5 +90,5 @@ GUI Leclerc (HTTPS): `https://<IP>:5801`
 ## Dépannage rapide
 
 - **CDP injoignable**: vérifiez que `leclerc-browser` est up et que le healthcheck est vert.
-- **HTTPS seulement**: utilisez toujours `https://<IP>:5801`.
+- **HTTPS seulement**: utilisez toujours `https://<IP>:5801` (pas d'accès HTTP).
 - **Blocage répété**: refaites la résolution captcha/login via la GUI.

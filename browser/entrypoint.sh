@@ -6,8 +6,9 @@ CERT_FILE=${CERT_DIR}/novnc.pem
 KEY_FILE=${CERT_DIR}/novnc.key
 DISPLAY_NUM=${DISPLAY:-:99}
 START_URL=${LECLERC_START_URL:-https://www.e.leclerc/}
+PROFILE_DIR=/sessions/leclerc-profile
 
-mkdir -p "${CERT_DIR}" /profiles/leclerc
+mkdir -p "${CERT_DIR}" "${PROFILE_DIR}"
 
 if [[ ! -f "${CERT_FILE}" || ! -f "${KEY_FILE}" ]]; then
   openssl req -x509 -nodes -newkey rsa:2048 \
@@ -36,7 +37,7 @@ fi
   --disable-dev-shm-usage \
   --remote-debugging-address=0.0.0.0 \
   --remote-debugging-port=9222 \
-  --user-data-dir=/profiles/leclerc \
+  --user-data-dir="${PROFILE_DIR}" \
   --no-first-run \
   --no-default-browser-check \
   --disable-features=TranslateUI \

@@ -116,7 +116,7 @@
         unblockDetails.textContent = job.error || job.result?.reason || '';
         return;
       }
-      if (job.status === 'SUCCEEDED') {
+      if (job.status === 'SUCCESS') {
         setStatus(`Job #${job.id}`, 'status-success');
         renderResults(job.result?.items || []);
         unblockPanel.hidden = true;

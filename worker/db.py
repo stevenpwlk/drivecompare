@@ -120,7 +120,7 @@ def mark_job_succeeded(job_id: int, result: dict[str, Any]) -> None:
     execute(
         """
         UPDATE jobs
-        SET status = 'SUCCEEDED', result_json = ?, error = NULL, updated_at = ?
+        SET status = 'SUCCESS', result_json = ?, error = NULL, updated_at = ?
         WHERE id = ?
         """,
         (json.dumps(result or {}), utc_now(), job_id),
