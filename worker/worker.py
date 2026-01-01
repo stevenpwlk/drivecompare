@@ -4,6 +4,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +30,10 @@ LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
 SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 JOB_RETRIES = int(os.getenv("JOB_RETRIES", "2"))
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
 LECLERC_CDP_VERSION_URL = f"{LECLERC_CDP_URL}/json/version"
 LECLERC_CDP_HEALTH_PATH = SESSIONS_DIR / "leclerc_cdp_health.json"
+LECLERC_GUI_TTL_SECONDS = int(os.getenv("LECLERC_GUI_TTL_SECONDS", "300"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -62,6 +64,23 @@ def check_leclerc_cdp_health() -> tuple[bool, dict[str, Any]]:
         payload["message"] = f"{error.__class__.__name__}: {error}"
     _write_cdp_health(payload)
     return payload["ok"], payload
+
+
+def is_leclerc_gui_active() -> bool:
+    if get_key_value("leclerc_gui_active") != "1":
+        return False
+    active_at = get_key_value("leclerc_gui_active_at")
+    if not active_at:
+        return True
+    try:
+        parsed = datetime.fromisoformat(active_at)
+    except ValueError:
+        return True
+    if (datetime.now(timezone.utc) - parsed).total_seconds() > LECLERC_GUI_TTL_SECONDS:
+        set_key_value("leclerc_gui_active", "0")
+        delete_key_value("leclerc_gui_active_at")
+        return False
+    return True
 
 
 def capture_artifacts(context, job_id: int, error: Exception):
@@ -190,7 +209,7 @@ def handle_retailer_search(job):
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    if get_key_value("leclerc_gui_active") == "1":
+    if is_leclerc_gui_active():
         result = {
             "items": [],
             "reason": "GUI_ACTIVE",
@@ -261,17 +280,17 @@ def handle_retailer_search(job):
             )
             set_key_value("leclerc_blocked_job_id", str(job["id"]))
             if blocked_url:
-                set_key_value("leclerc_unblock_url", blocked_url)
+                set_key_value("leclerc_blocked_url", blocked_url)
+                delete_key_value("leclerc_unblock_url")
             set_key_value("leclerc_blocked", "1")
-            set_key_value("leclerc_blocked_reason", error_message)
             set_key_value("leclerc_blocked_at", blocked_at)
         else:
             update_job(job["id"], status, result=result, error=error_message)
     else:
         update_job(job["id"], "DONE", result=result)
         set_key_value("leclerc_blocked", "0")
+        delete_key_value("leclerc_blocked_url")
         delete_key_value("leclerc_unblock_url")
-        delete_key_value("leclerc_blocked_reason")
         delete_key_value("leclerc_blocked_at")
 
 
@@ -325,6 +344,8 @@ def job_loop():
             payload = json.loads(job["payload"])
             job["payload"] = payload
             mark_job_retrying(job["id"])
+            if job["type"] == "RETAILER_SEARCH" and payload.get("store") == "LECLERC":
+                logging.info("Leclerc retrying after unblock (job %s)", job["id"])
             attempt = 0
             while attempt <= JOB_RETRIES:
                 try:

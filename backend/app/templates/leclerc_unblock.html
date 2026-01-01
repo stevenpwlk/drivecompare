@@ -15,17 +15,11 @@
         Cette page se met à jour automatiquement. Lorsqu'un blocage est détecté,
         vous serez redirigé vers l'URL à débloquer.
       </p>
-      <p class="muted">
-        Si aucune redirection ne se produit, vous pouvez ouvrir manuellement
-        <a href="{{ fallback_url }}" target="_self">{{ fallback_url }}</a>.
-      </p>
     </section>
   </main>
 
   <script>
     const statusText = document.getElementById('status-text');
-    const fallbackUrl = {{ fallback_url | tojson }};
-
     function renderStatus(status) {
       if (status.blocked) {
         statusText.textContent = 'Blocage requis (captcha/accès bloqué).';
@@ -44,10 +38,8 @@
         renderStatus(status);
         if (status.blocked && status.unblock_url) {
           if (status.unblock_url !== window.location.href) {
-            window.location = status.unblock_url;
+            window.location.replace(status.unblock_url);
           }
-        } else if (!status.blocked && window.location.href !== fallbackUrl) {
-          // Keep user on kiosk when not blocked.
         }
       } catch (error) {
         // ignore transient errors

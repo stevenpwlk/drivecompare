@@ -21,7 +21,7 @@ BASE_URL = os.getenv("LECLERC_BASE_URL", "https://www.e.leclerc/")
 LECLERC_PROFILE_DIR = Path(
     os.getenv("LECLERC_PROFILE_DIR", str(SESSIONS_DIR / "leclerc_profile"))
 )
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
 LECLERC_BACKEND_URL = os.getenv("LECLERC_BACKEND_URL", "http://backend:8000")
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
@@ -44,8 +44,8 @@ def persistent_profile_exists(profile_dir: Path = LECLERC_PROFILE_DIR) -> bool:
     return profile_dir.exists()
 
 
-def notify_backend_blocked(unblock_url: str | None, job_id: int | None = None) -> None:
-    payload = {"unblock_url": unblock_url, "job_id": job_id}
+def notify_backend_blocked(blocked_url: str | None, job_id: int | None = None) -> None:
+    payload = {"blocked_url": blocked_url, "job_id": job_id}
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{LECLERC_BACKEND_URL}/leclerc/unblock/blocked",
