@@ -2,6 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Drive Compare</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
@@ -18,13 +19,18 @@
         </label>
         <button type="submit">Lancer la recherche Leclerc</button>
       </form>
-      <div id="leclerc-unblock" class="hint" hidden>
-        <div><strong>Session Leclerc (mobile)</strong></div>
+      <div id="leclerc-unblock" class="hint card-highlight" hidden>
+        <div><strong>Leclerc bloqué</strong></div>
         <div class="muted">
-          Ouvrez le navigateur distant, passez le captcha/login, revenez et relancez la recherche.
+          Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
         </div>
         <div class="actions">
-          <button type="button" id="leclerc-unblock-button">Ouvrir Leclerc (déblocage)</button>
+          <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
+            Ouvrir Leclerc (déblocage)
+          </a>
+          <a id="leclerc-unblock-same-tab" class="button-link secondary">
+            Ouvrir dans cet onglet
+          </a>
           <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
         </div>
       </div>
@@ -68,6 +74,12 @@
       </ul>
     </section>
   </main>
+  <div id="mobile-actions" class="mobile-actions" hidden>
+    <a id="mobile-unblock" class="button-link" target="_blank" rel="noopener">
+      Débloquer Leclerc
+    </a>
+    <button type="button" id="mobile-retry">Relancer</button>
+  </div>
 
   <script>
     const searchForm = document.getElementById('search-form');
@@ -78,11 +90,14 @@
     const host = window.location.hostname;
     const leclercGuiUrl = `https://${host}:5801/`;
     const leclercUnblock = document.getElementById('leclerc-unblock');
-    const leclercUnblockButton = document.getElementById('leclerc-unblock-button');
+    const leclercUnblockLink = document.getElementById('leclerc-unblock-link');
+    const leclercUnblockSameTab = document.getElementById('leclerc-unblock-same-tab');
     const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
+    const mobileActions = document.getElementById('mobile-actions');
+    const mobileUnblock = document.getElementById('mobile-unblock');
+    const mobileRetry = document.getElementById('mobile-retry');
     let timeout;
     let poller;
-    let lastAutoOpenJobId = null;
 
     async function setLeclercGuiActive(active) {
       await fetch('/leclerc/gui/active', {
@@ -92,16 +107,33 @@
       });
     }
 
-    async function openLeclercGui() {
-      await setLeclercGuiActive(true);
-      window.open(leclercGuiUrl, "_blank", "noopener");
+    function notifyLeclercGuiActive(active) {
+      const payload = JSON.stringify({ active });
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon('/leclerc/gui/active', blob);
+        return;
+      }
+      fetch('/leclerc/gui/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+      });
     }
 
-    leclercUnblockButton.addEventListener('click', () => {
-      openLeclercGui();
+    leclercUnblockLink.href = leclercGuiUrl;
+    leclercUnblockSameTab.href = leclercGuiUrl;
+    mobileUnblock.href = leclercGuiUrl;
+
+    [leclercUnblockLink, leclercUnblockSameTab, mobileUnblock].forEach((link) => {
+      link.addEventListener('click', () => notifyLeclercGuiActive(true));
     });
     leclercUnblockDone.addEventListener('click', async () => {
       await setLeclercGuiActive(false);
+    });
+    mobileRetry.addEventListener('click', () => {
+      searchForm.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
     });
 
     search.addEventListener('input', () => {
@@ -114,28 +146,52 @@
       timeout = setTimeout(async () => {
         const resp = await fetch(`/products/search?q=${encodeURIComponent(query)}`);
         const data = await resp.json();
-        results.innerHTML = data.map(item => {
-          return `<div class="result">#${item.id} - ${item.name} (${item.brand || 'N/A'}) ${item.size || ''} ${item.unit || ''}</div>`;
-        }).join('') || '<div class="muted">Aucun résultat</div>';
+        const localItems = data.map(item => {
+          return `
+            <div class="result-card">
+              <strong>#${item.id} - ${item.name}</strong>
+              <div class="muted">${item.brand || 'N/A'} ${item.size || ''} ${item.unit || ''}</div>
+            </div>
+          `;
+        }).join('');
+        results.innerHTML = localItems
+          ? `<div class="results-grid">${localItems}</div>`
+          : '<div class="muted">Aucun résultat</div>';
       }, 250);
     });
 
+    function getBadgeInfo(job) {
+      if (job.status === 'FAILED' && job.result?.reason === 'DATADOME_BLOCKED') {
+        return { label: 'BLOCKED', className: 'status-blocked' };
+      }
+      const label = job.status === 'DONE' ? 'SUCCESS' : job.status;
+      return { label, className: `status-${label.toLowerCase()}` };
+    }
+
     function renderJob(job) {
-      jobStatus.innerHTML = `<strong>Job #${job.id}</strong> - ${job.status}`;
+      const badge = getBadgeInfo(job);
+      jobStatus.innerHTML = `
+        <strong>Job #${job.id}</strong>
+        <span class="status-badge ${badge.className}">${badge.label}</span>
+      `;
       if (job.status === 'DONE') {
         leclercUnblock.hidden = true;
+        mobileActions.hidden = true;
         const items = (job.result?.items || []).map(item => {
           const price = item.price != null ? `${item.price} €` : 'N/A';
           const unitPrice = item.unit_price != null ? `${item.unit_price} ${item.unit || ''}` : '';
           return `
-            <div class="result">
+            <div class="result-card">
               <strong>${item.title || 'Produit'}</strong>
-              <div class="muted">${item.brand || 'Marque inconnue'} - ${price} ${unitPrice}</div>
+              <div class="muted">${item.brand || 'Marque inconnue'}</div>
+              <div class="muted">${price} ${unitPrice}</div>
               <div class="muted">${item.url || ''}</div>
             </div>
           `;
         }).join('');
-        jobResults.innerHTML = items || '<div class="muted">Aucun résultat côté Leclerc.</div>';
+        jobResults.innerHTML = items
+          ? `<div class="results-grid">${items}</div>`
+          : '<div class="muted">Aucun résultat côté Leclerc.</div>';
       } else if (job.status === 'FAILED') {
         const debug = job.result?.debug || {};
         const reason = job.result?.reason || job.error || '';
@@ -150,19 +206,17 @@
         if (reason === 'DATADOME_BLOCKED') {
           const instruction = debug.instruction || '';
           leclercUnblock.hidden = false;
-          if (lastAutoOpenJobId !== job.id) {
-            openLeclercGui();
-            lastAutoOpenJobId = job.id;
-          }
+          mobileActions.hidden = false;
           jobResults.innerHTML = `
             <div class="muted">
-              Leclerc a bloqué l'accès automatique (DataDome). Le navigateur distant va s'ouvrir.
+              Leclerc a bloqué l'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer.
             </div>
             ${instruction ? `<div class="muted">${instruction}</div>` : ''}
             ${details ? `<div class="muted">${details}</div>` : ''}
           `;
         } else if (reason === 'GUI_ACTIVE') {
           leclercUnblock.hidden = false;
+          mobileActions.hidden = false;
           jobResults.innerHTML = `
             <div class="muted">
               Le navigateur distant est actif. Terminez la session puis cliquez "J'ai terminé".
@@ -171,6 +225,7 @@
           `;
         } else {
           leclercUnblock.hidden = true;
+          mobileActions.hidden = true;
           jobResults.innerHTML = `
             <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
             ${details ? `<div class="muted">${details}</div>` : ''}
@@ -178,6 +233,7 @@
         }
       } else {
         leclercUnblock.hidden = true;
+        mobileActions.hidden = true;
         jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
       }
     }
@@ -215,7 +271,11 @@
         return;
       }
       const data = await resp.json();
-      jobStatus.innerHTML = `<strong>Job #${data.job_id}</strong> - ${data.status}`;
+      const initialBadge = getBadgeInfo({ status: data.status });
+      jobStatus.innerHTML = `
+        <strong>Job #${data.job_id}</strong>
+        <span class="status-badge ${initialBadge.className}">${initialBadge.label}</span>
+      `;
       poller = setInterval(async () => {
         const done = await pollJob(data.job_id);
         if (done) {

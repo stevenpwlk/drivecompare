@@ -7,8 +7,8 @@ body {
 
 .container {
   max-width: 960px;
-  margin: 2rem auto;
-  padding: 0 1rem;
+  margin: 2rem auto 5rem;
+  padding: 0 1.25rem;
 }
 
 h1, h2 {
@@ -23,22 +23,51 @@ h1, h2 {
   margin-bottom: 1.5rem;
 }
 
+.card-highlight {
+  border: 1px solid #f0c987;
+  background: #fff7e8;
+}
+
 label {
   display: block;
   margin-bottom: 0.75rem;
 }
 
-input, select, button {
-  padding: 0.5rem;
+input, select, button, .button-link {
+  padding: 0.6rem 0.75rem;
   margin-top: 0.25rem;
 }
 
-button {
+input, select {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+button, .button-link {
   cursor: pointer;
   background: #1d70b8;
   color: #fff;
   border: none;
   border-radius: 4px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 44px;
+  font-weight: 600;
+}
+
+.button-link.secondary {
+  background: #4b5563;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
 }
 
 ul {
@@ -55,14 +84,78 @@ li {
   font-size: 0.9rem;
 }
 
-.result {
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #eee;
+.result-card {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 0.75rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
 
 .hint {
   font-size: 0.85rem;
   color: #444;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-left: 0.5rem;
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.status-badge.status-done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-badge.status-success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-badge.status-failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-badge.status-blocked {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.status-running,
+.status-badge.status-pending {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.mobile-actions {
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
+}
+
+.mobile-actions .button-link,
+.mobile-actions button {
+  flex: 1;
 }
 
 .table {
@@ -76,4 +169,23 @@ li {
   text-align: left;
   padding: 0.5rem;
   border-bottom: 1px solid #eee;
+}
+
+@media (max-width: 720px) {
+  .container {
+    margin: 1.25rem auto 6rem;
+    padding: 0 1rem;
+  }
+
+  .card {
+    padding: 1.25rem;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+
+  h1, h2 {
+    font-size: 1.25rem;
+  }
 }
