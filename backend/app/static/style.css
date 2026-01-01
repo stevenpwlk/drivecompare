@@ -36,6 +36,7 @@ label {
 input, select, button, .button-link {
   padding: 0.6rem 0.75rem;
   margin-top: 0.25rem;
+  font-size: 1rem;
 }
 
 input, select {
@@ -182,6 +183,10 @@ li {
   }
 
   .actions {
+    flex-direction: column;
+  }
+
+  .mobile-actions {
     flex-direction: column;
   }
 

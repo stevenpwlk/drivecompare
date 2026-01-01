@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +17,39 @@ LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
 SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR", "/sessions"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 JOB_RETRIES = int(os.getenv("JOB_RETRIES", "2"))
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
+LECLERC_CDP_VERSION_URL = f"{LECLERC_CDP_URL}/json/version"
+LECLERC_CDP_HEALTH_PATH = SESSIONS_DIR / "leclerc_cdp_health.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def _write_cdp_health(payload: dict[str, Any]) -> None:
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = LECLERC_CDP_HEALTH_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(LECLERC_CDP_HEALTH_PATH)
+
+
+def check_leclerc_cdp_health() -> tuple[bool, dict[str, Any]]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "checked_at": int(time.time()),
+        "message": "CDP health check not started",
+        "version": None,
+    }
+    try:
+        with urllib.request.urlopen(LECLERC_CDP_VERSION_URL, timeout=3) as response:
+            raw = response.read().decode("utf-8")
+        payload["version"] = json.loads(raw) if raw else None
+        payload["ok"] = True
+        payload["message"] = "CDP reachable"
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as error:
+        payload["message"] = f"{error.__class__.__name__}: {error}"
+    except Exception as error:
+        payload["message"] = f"{error.__class__.__name__}: {error}"
+    _write_cdp_health(payload)
+    return payload["ok"], payload
 
 
 def capture_artifacts(context, job_id: int, error: Exception):
@@ -158,7 +191,25 @@ def handle_retailer_search(job):
 
     with sync_playwright() as p:
         leclerc.LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        browser = p.chromium.connect_over_cdp("http://leclerc-gui:9222")
+        cdp_ok, cdp_payload = check_leclerc_cdp_health()
+        if not cdp_ok:
+            logging.error("Leclerc CDP unavailable: %s", cdp_payload.get("message"))
+            result = {
+                "items": [],
+                "reason": "LECLERC_CDP_UNAVAILABLE",
+                "debug": {
+                    "instruction": "Ouvrir Leclerc (déblocage).",
+                    "cdp_health": cdp_payload,
+                },
+            }
+            update_job(
+                job["id"],
+                "FAILED",
+                result=result,
+                error="Leclerc GUI/CDP non prêt",
+            )
+            return
+        browser = p.chromium.connect_over_cdp(LECLERC_CDP_URL)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = context.pages[0] if context.pages else context.new_page()
         try:

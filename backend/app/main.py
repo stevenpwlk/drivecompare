@@ -26,6 +26,7 @@ LECLERC_STORE_URL = os.getenv(
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
 )
 LECLERC_PROFILE_DIR = Path(os.getenv("LECLERC_PROFILE_DIR", "/sessions/leclerc_profile"))
+LECLERC_CDP_HEALTH_PATH = Path(os.getenv("LECLERC_CDP_HEALTH_PATH", "/sessions/leclerc_cdp_health.json"))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -290,3 +291,16 @@ def clear_leclerc_blocked():
 @app.get("/leclerc/gui/status")
 def get_leclerc_gui_status():
     return {"active": is_gui_active(), "blocked_url": get_blocked_url()}
+
+
+@app.get("/leclerc/cdp/health")
+def leclerc_cdp_health():
+    if LECLERC_CDP_HEALTH_PATH.exists():
+        try:
+            payload = json.loads(LECLERC_CDP_HEALTH_PATH.read_text(encoding="utf-8"))
+            payload.setdefault("ok", False)
+            payload.setdefault("message", "Unknown")
+            return payload
+        except Exception:
+            return {"ok": False, "message": "Health file unreadable"}
+    return {"ok": False, "message": "No CDP health check available"}
