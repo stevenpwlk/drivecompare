@@ -22,7 +22,7 @@ newgrp docker
 
 ## Démarrage rapide
 
-1. Créez le fichier `.env` (ou copiez `.env.example`) et ajustez `PUBLIC_HOST` à l'IP LAN du serveur.
+1. Créez le fichier `.env` (ou copiez `.env.example`) et ajustez au besoin `LECLERC_STORE_URL`.
 
 ```bash
 cp .env.example .env
@@ -81,40 +81,34 @@ Dans ce cas, la recherche échoue en `FAILED` avec la raison `DATADOME_BLOCKED` 
 
 Le worker reste en mode headless pour les recherches quotidiennes. Pour créer une session valide sur mobile (LAN):
 
-A) Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
-
-B) Cliquer sur **"Ouvrir Leclerc (session)"** (ouvre `http://<IP>:5800`).
-
-C) Dans le navigateur distant:
-   - Aller sur `LECLERC_STORE_URL`.
-   - Accepter les cookies.
-   - Passer DataDome si nécessaire.
-   - Se connecter / choisir le magasin.
-
-D) Fermer l’onglet, revenir sur DriveCompare et relancer la recherche.
+1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
+2. Lancer une recherche Leclerc.
+3. Si DataDome bloque, l'app ouvre automatiquement `https://<IP>:5801` (navigateur distant).
+4. Dans le navigateur distant:
+   - Passer le captcha/login.
+   - Sélectionner le magasin si demandé (l'URL par défaut est `LECLERC_STORE_URL`).
+5. Revenir sur DriveCompare et relancer la recherche.
 
 La session est persistée dans `./sessions/leclerc_profile` et réutilisée par Playwright headless.
 
+> Note: le presse-papier automatique peut nécessiter HTTPS côté navigateur distant. Sinon, utilisez le panneau clipboard si présent.
+
 ### Configuration leclerc-gui (Chromium)
 
-Le service `leclerc-gui` expose une interface web sur `http://<IP>:5800`.
-Pour éviter un accès libre sur le LAN, l'image `jlesage/chromium` supporte:
+Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS) et `http://<IP>:5800` (HTTP).
+Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
 
-- `WEB_AUTHENTICATION=1`
-- `WEB_AUTHENTICATION_USERNAME`
-- `WEB_AUTHENTICATION_PASSWORD`
-
-L'URL du bouton dans l'IHM est construite avec `PUBLIC_HOST` (ou `BACKEND_PUBLIC_BASE_URL` si défini).
+- `LECLERC_GUI_USER`
+- `LECLERC_GUI_PASS`
 
 Voir `.env.example` pour les variables disponibles.
 
 ### Dépannage
 
 - Si DataDome réapparaît, refaire l'étape **Session Leclerc via GUI**.
-- Si `http://<IP>:5800` n'est pas accessible, vérifiez:
+- Si `https://<IP>:5801` n'est pas accessible, vérifiez:
   - que `leclerc-gui` est démarré (`docker compose ps`),
-  - que `PUBLIC_HOST` pointe vers l'IP LAN du serveur,
-  - que le port 5800 est ouvert sur le LAN.
+  - que le port 5801 est ouvert sur le LAN.
 
 ### Validité
 

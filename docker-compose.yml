@@ -25,14 +25,16 @@ services:
       - backend
 
   leclerc-gui:
-    image: jlesage/chromium
+    image: lscr.io/linuxserver/chromium:latest
     ports:
-      - "5800:5800"
-      - "5900:5900"
+      - "5801:3001"
+      - "5800:3000"
     volumes:
       - ./sessions/leclerc_profile:/config
     environment:
-      - TZ=${TZ:-Europe/Paris}
-      - WEB_AUTHENTICATION=${WEB_AUTHENTICATION:-0}
-      - WEB_AUTHENTICATION_USERNAME=${WEB_AUTHENTICATION_USERNAME:-}
-      - WEB_AUTHENTICATION_PASSWORD=${WEB_AUTHENTICATION_PASSWORD:-}
+      - TZ=Europe/Paris
+      - CHROME_CLI=${LECLERC_STORE_URL}
+      - CUSTOM_USER=${LECLERC_GUI_USER:-}
+      - PASSWORD=${LECLERC_GUI_PASS:-}
+    shm_size: "1gb"
+    restart: unless-stopped

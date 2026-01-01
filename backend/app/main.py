@@ -1,7 +1,5 @@
 import json
-import os
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -14,20 +12,9 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
 templates = Jinja2Templates(directory="backend/app/templates")
 
-PUBLIC_HOST = os.getenv("PUBLIC_HOST")
-BACKEND_PUBLIC_BASE_URL = os.getenv("BACKEND_PUBLIC_BASE_URL")
-LECLERC_GUI_PORT = os.getenv("LECLERC_GUI_PORT", "5800")
-
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    public_host = PUBLIC_HOST
-    if not public_host and BACKEND_PUBLIC_BASE_URL:
-        parsed = urlparse(BACKEND_PUBLIC_BASE_URL)
-        public_host = parsed.hostname or BACKEND_PUBLIC_BASE_URL
-    if not public_host:
-        public_host = "localhost"
-    leclerc_gui_url = f"http://{public_host}:{LECLERC_GUI_PORT}"
     baskets = fetch_all(
         """
         SELECT b.id, b.name, b.created_at, COUNT(bi.id) AS item_count
@@ -42,7 +29,6 @@ def index(request: Request):
         {
             "request": request,
             "baskets": baskets,
-            "leclerc_gui_url": leclerc_gui_url,
         },
     )
 
