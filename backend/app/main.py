@@ -1,6 +1,7 @@
 import json
 import os
-from pathlib import Path
+import urllib.error
+import urllib.request
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -8,9 +9,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import execute, fetch_all, fetch_one, insert_job, request_job_retry
+from .db import execute, fetch_all, fetch_one, insert_job
 from .leclerc_state import (
-    DEFAULT_LECLERC_FALLBACK_URL,
     clear_blocked_state,
     get_blocked_job_id,
     get_blocked_state,
@@ -23,11 +23,7 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
 templates = Jinja2Templates(directory="backend/app/templates")
 
-LECLERC_STORE_URL = os.getenv(
-    "LECLERC_STORE_URL",
-    "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
-)
-LECLERC_CDP_HEALTH_PATH = Path(os.getenv("LECLERC_CDP_HEALTH_PATH", "/sessions/leclerc_cdp_health.json"))
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -259,33 +255,32 @@ def retry_job(job_id: int):
 
 @app.get("/leclerc/unblock")
 def leclerc_unblock(request: Request):
-    fallback = LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
     return templates.TemplateResponse(
         "leclerc_unblock.html",
         {
             "request": request,
-            "fallback_url": fallback,
         },
     )
 
 
 @app.get("/leclerc/unblock/status")
 def leclerc_unblock_status():
-    blocked, unblock_url, updated_at = get_blocked_state()
+    blocked, blocked_url, updated_at = get_blocked_state()
     return {
         "blocked": blocked,
-        "unblock_url": unblock_url,
+        "unblock_url": blocked_url,
         "updated_at": updated_at,
+        "gui_active": is_gui_active(),
     }
 
 
 @app.post("/leclerc/unblock/blocked")
 def leclerc_unblock_blocked(payload: dict[str, Any]):
-    unblock_url = payload.get("unblock_url")
+    blocked_url = payload.get("blocked_url") or payload.get("unblock_url")
     blocked_job_id = payload.get("job_id")
     set_blocked_state(
         True,
-        unblock_url=unblock_url,
+        blocked_url=blocked_url,
         blocked_job_id=str(blocked_job_id) if blocked_job_id else None,
     )
     return {"ok": True}
@@ -301,15 +296,9 @@ def set_leclerc_gui_active(payload: dict[str, Any]):
 @app.post("/leclerc/unblock/done")
 def leclerc_unblock_done(payload: dict[str, Any]):
     job_id = payload.get("job_id") or get_blocked_job_id()
-    retry_job_id = None
-    if job_id:
-        job = fetch_one("SELECT id, status FROM jobs WHERE id = ?", (job_id,))
-        if job and job["status"] in {"BLOCKED", "FAILED"}:
-            request_job_retry(job_id)
-            retry_job_id = job_id
     clear_blocked_state()
     set_gui_active(False)
-    return {"ok": True, "job_id": retry_job_id}
+    return {"ok": True, "job_id": job_id}
 
 
 @app.post("/leclerc/blocked/clear")
@@ -320,18 +309,28 @@ def clear_leclerc_blocked():
 
 @app.get("/leclerc/gui/status")
 def get_leclerc_gui_status():
-    _, unblock_url, updated_at = get_blocked_state()
-    return {"active": is_gui_active(), "blocked_url": unblock_url, "updated_at": updated_at}
+    _, blocked_url, updated_at = get_blocked_state()
+    return {"active": is_gui_active(), "blocked_url": blocked_url, "updated_at": updated_at}
+
+
+@app.get("/health")
+def health():
+    cdp = leclerc_cdp_health()
+    return {"ok": True, "cdp": cdp}
 
 
 @app.get("/leclerc/cdp/health")
 def leclerc_cdp_health():
-    if LECLERC_CDP_HEALTH_PATH.exists():
-        try:
-            payload = json.loads(LECLERC_CDP_HEALTH_PATH.read_text(encoding="utf-8"))
-            payload.setdefault("ok", False)
-            payload.setdefault("message", "Unknown")
-            return payload
-        except Exception:
-            return {"ok": False, "message": "Health file unreadable"}
-    return {"ok": False, "message": "No CDP health check available"}
+    version_url = f"{LECLERC_CDP_URL.rstrip('/')}/json/version"
+    payload: dict[str, Any] = {"ok": False, "message": "CDP unreachable", "version": None}
+    try:
+        with urllib.request.urlopen(version_url, timeout=3) as response:
+            raw = response.read().decode("utf-8")
+        payload["version"] = json.loads(raw) if raw else None
+        payload["ok"] = True
+        payload["message"] = "CDP reachable"
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as error:
+        payload["message"] = f"{error.__class__.__name__}: {error}"
+    except Exception as error:
+        payload["message"] = f"{error.__class__.__name__}: {error}"
+    return payload

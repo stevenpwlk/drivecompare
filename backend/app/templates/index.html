@@ -97,6 +97,7 @@
     let poller;
     let currentJobId;
     let lastQuery;
+    let guiHeartbeat;
 
     async function setLeclercGuiActive(active) {
       await fetch('/leclerc/gui/active', {
@@ -121,6 +122,22 @@
       });
     }
 
+    function startGuiHeartbeat() {
+      if (guiHeartbeat) {
+        return;
+      }
+      setLeclercGuiActive(true);
+      guiHeartbeat = setInterval(() => setLeclercGuiActive(true), 20000);
+    }
+
+    function stopGuiHeartbeat() {
+      if (guiHeartbeat) {
+        clearInterval(guiHeartbeat);
+        guiHeartbeat = null;
+      }
+      setLeclercGuiActive(false);
+    }
+
     leclercUnblockLink.href = leclercGuiHttpsUrl;
     mobileUnblock.href = leclercGuiHttpsUrl;
 
@@ -136,6 +153,8 @@
       }
       leclercUnblockDone.disabled = true;
       mobileRetry.disabled = true;
+      jobStatus.textContent = 'Relance en cours...';
+      stopGuiHeartbeat();
       try {
         const resp = await fetch('/leclerc/unblock/done', {
           method: 'POST',
@@ -146,23 +165,23 @@
           throw new Error('Retry failed');
         }
         const data = await resp.json();
-        if (data.job_id) {
-          currentJobId = data.job_id;
-          jobStatus.innerHTML = `
-            <strong>Job #${currentJobId}</strong>
-            <span class="status-badge status-running">RUNNING</span>
-          `;
-          poller = setInterval(async () => {
-            const done = await pollJob(currentJobId);
-            if (done) {
-              clearInterval(poller);
-            }
-          }, 1000);
-          return;
+        const retryJobId = data.job_id || currentJobId;
+        const retryResp = await fetch(`/jobs/${retryJobId}/retry`, { method: 'POST' });
+        if (!retryResp.ok) {
+          throw new Error('Retry failed');
         }
-        if (lastQuery) {
-          await startSearch(lastQuery);
-        }
+        const retryData = await retryResp.json();
+        currentJobId = retryData.job_id;
+        jobStatus.innerHTML = `
+          <strong>Job #${currentJobId}</strong>
+          <span class="status-badge status-running">RUNNING</span>
+        `;
+        poller = setInterval(async () => {
+          const done = await pollJob(currentJobId);
+          if (done) {
+            clearInterval(poller);
+          }
+        }, 1000);
       } catch (error) {
         jobStatus.textContent = "Impossible de relancer la recherche.";
       } finally {
@@ -216,6 +235,7 @@
       if (job.status === 'DONE') {
         leclercUnblock.hidden = true;
         mobileActions.hidden = true;
+        stopGuiHeartbeat();
         const items = (job.result?.items || []).map(item => {
           const price = item.price != null ? `${item.price} €` : 'N/A';
           const unitPrice = item.unit_price != null ? `${item.unit_price} ${item.unit || ''}` : '';
@@ -246,6 +266,7 @@
           const instruction = debug.instruction || '';
           leclercUnblock.hidden = false;
           mobileActions.hidden = false;
+          startGuiHeartbeat();
           jobResults.innerHTML = `
             <div class="muted">
               ${reason === 'LECLERC_CDP_UNAVAILABLE'
@@ -258,6 +279,7 @@
         } else if (reason === 'GUI_ACTIVE') {
           leclercUnblock.hidden = false;
           mobileActions.hidden = false;
+          startGuiHeartbeat();
           jobResults.innerHTML = `
             <div class="muted">
               Le navigateur distant est actif. Terminez la session puis cliquez "J'ai terminé".
@@ -267,6 +289,7 @@
         } else {
           leclercUnblock.hidden = true;
           mobileActions.hidden = true;
+          stopGuiHeartbeat();
           jobResults.innerHTML = `
             <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
             ${details ? `<div class="muted">${details}</div>` : ''}
@@ -275,6 +298,7 @@
       } else {
         leclercUnblock.hidden = true;
         mobileActions.hidden = true;
+        stopGuiHeartbeat();
         jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
       }
     }

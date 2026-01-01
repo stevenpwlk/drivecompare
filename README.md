@@ -93,8 +93,8 @@ Pour créer une session valide sur mobile (LAN):
 6. Revenir sur DriveCompare et cliquer **J'ai terminé** pour libérer le verrou, effacer l'URL bloquée et relancer la recherche automatiquement.
 
 La session est persistée dans `./sessions/leclerc_profile` et réutilisée par le worker via CDP.
-Si le verrou `GUI_ACTIVE` est actif, le worker refuse le job Leclerc pour éviter la corruption du profil.
-L'état Leclerc est stocké en base (table `key_value`).
+Si le verrou `GUI_ACTIVE` est actif (heartbeat + TTL), le worker refuse le job Leclerc pour éviter la corruption du profil.
+L'état Leclerc est stocké en base (table `key_value`) avec `blocked_url`, `blocked_job_id`, `blocked_at`.
 
 > Note: le presse-papier automatique peut nécessiter HTTPS côté navigateur distant. Sinon, utilisez le panneau clipboard si présent.
 
@@ -103,8 +103,9 @@ L'état Leclerc est stocké en base (table `key_value`).
 Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS).
 Il démarre en mode "app" sur `/leclerc/unblock`, qui affiche une page "kiosk" et redirige automatiquement vers la dernière URL bloquée
 DataDome quand un blocage est détecté. Un port CDP interne est activé (9222) pour que le worker pilote le même navigateur.
-Le worker partage le namespace réseau du service `leclerc-gui`, ce qui permet d'accéder au CDP via `http://127.0.0.1:9222`
-même si Chromium écoute uniquement sur le loopback.
+Le worker se connecte au CDP exposé sur le réseau Docker (`http://leclerc-gui:9222`) afin de piloter le même navigateur partagé.
+La variable `LECLERC_CDP_URL` permet de surcharger cette adresse si besoin.
+Le TTL du verrou GUI est configurable via `LECLERC_GUI_TTL_SECONDS` (défaut: 300s).
 Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
 
 - `CUSTOM_USER`
@@ -140,12 +141,12 @@ docker compose exec leclerc-gui curl -s http://127.0.0.1:9222/json/version
 
 ### Diagnostic Leclerc
 
-- Vérifier le CDP dans le namespace partagé:
+- Vérifier le CDP depuis le worker:
 
 ```bash
 docker compose exec worker bash -lc 'python - <<PY
 import urllib.request
-print(urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=2).read()[:120])
+print(urllib.request.urlopen("http://leclerc-gui:9222/json/version", timeout=2).read()[:120])
 PY'
 ```
 
@@ -156,6 +157,8 @@ PY'
 
 ```bash
 curl -s http://127.0.0.1:8000/leclerc/unblock/status
+curl -s http://127.0.0.1:8000/leclerc/cdp/health
+curl -s http://127.0.0.1:8000/health
 ```
 
 ### Dépannage
