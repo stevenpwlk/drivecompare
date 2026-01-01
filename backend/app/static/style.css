@@ -149,6 +149,11 @@ li {
   color: #166534;
 }
 
+.status-badge.status-succeeded {
+  background: #dcfce7;
+  color: #166534;
+}
+
 .status-badge.status-failed {
   background: #fee2e2;
   color: #991b1b;
@@ -160,6 +165,7 @@ li {
 }
 
 .status-badge.status-running,
+.status-badge.status-queued,
 .status-badge.status-pending {
   background: #e0f2fe;
   color: #075985;

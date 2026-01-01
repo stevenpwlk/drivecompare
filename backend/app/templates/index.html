@@ -3,357 +3,198 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Drive Compare</title>
+  <title>DriveCompare</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="container">
-    <h1>Drive Compare</h1>
+    <h1>DriveCompare</h1>
 
     <section class="card">
-      <h2>Recherche produit</h2>
+      <h2>Recherche Leclerc</h2>
       <form id="search-form">
         <label>
-          Rechercher un produit
-          <input id="search" type="text" placeholder="Rechercher un produit" />
+          Recherche
+          <input id="search-input" type="text" placeholder="ex: coca" required />
         </label>
-        <button type="submit">Lancer la recherche Leclerc</button>
+        <button type="submit">Lancer recherche Leclerc</button>
       </form>
-      <div id="leclerc-unblock" class="hint card-highlight" hidden>
-        <div><strong>Blocage Leclerc: action requise</strong></div>
-        <div class="muted">
-          Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
-          Firefox est recommandé.
-        </div>
-        <div class="actions">
-          <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
-            Ouvrir Leclerc (HTTPS)
-          </a>
-          <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
-        </div>
+      <div id="job-status" class="status-panel muted">Aucun job en cours.</div>
+    </section>
+
+    <section id="unblock-panel" class="card card-highlight" hidden>
+      <h2>Blocage Leclerc: action requise</h2>
+      <p class="muted">
+        Leclerc a bloqué l'accès automatique. Ouvrez la GUI HTTPS pour résoudre le captcha/login,
+        puis cliquez sur "J'ai terminé" pour reprendre le job.
+      </p>
+      <div class="actions">
+        <a id="unblock-link" class="button-link" target="_blank" rel="noopener">
+          Ouvrir Leclerc (HTTPS)
+        </a>
+        <button id="unblock-done" type="button">J'ai terminé</button>
       </div>
-      <div id="job-status" class="status-panel muted"></div>
-      <div id="job-results"></div>
-      <h3>Résultats locaux</h3>
-      <div id="results"></div>
+      <div id="unblock-details" class="muted"></div>
     </section>
 
     <section class="card">
-      <h2>Créer un panier rapide</h2>
-      <form method="post" action="/baskets/form">
-        <label>
-          Nom du panier
-          <input type="text" name="name" value="Panier" />
-        </label>
-        <label>
-          Produit ID
-          <input type="number" name="product_id" required />
-        </label>
-        <label>
-          Quantité
-          <input type="number" name="quantity" value="1" min="1" />
-        </label>
-        <button type="submit">Créer</button>
-      </form>
-      <p class="hint">Astuce: utilisez la recherche pour obtenir l'ID produit.</p>
-    </section>
-
-    <section class="card">
-      <h2>Historique paniers</h2>
-      <ul>
-        {% for basket in baskets %}
-          <li>
-            <a href="/baskets/{{ basket.id }}">{{ basket.name }}</a>
-            <span class="muted">({{ basket.item_count }} items, {{ basket.created_at }})</span>
-          </li>
-        {% else %}
-          <li>Aucun panier pour le moment.</li>
-        {% endfor %}
-      </ul>
+      <h2>Résultats</h2>
+      <div id="results" class="results-grid"></div>
     </section>
   </main>
-  <div id="mobile-actions" class="mobile-actions" hidden>
-    <a id="mobile-unblock" class="button-link" target="_blank" rel="noopener">
-      Débloquer Leclerc (HTTPS)
-    </a>
-    <button type="button" id="mobile-retry">Relancer</button>
-  </div>
 
   <script>
-    const searchForm = document.getElementById('search-form');
-    const search = document.getElementById('search');
-    const results = document.getElementById('results');
-    const jobStatus = document.getElementById('job-status');
-    const jobResults = document.getElementById('job-results');
-    const host = window.location.hostname;
-    const leclercGuiHttpsUrl = `https://${host}:5801/`;
-    const leclercUnblock = document.getElementById('leclerc-unblock');
-    const leclercUnblockLink = document.getElementById('leclerc-unblock-link');
-    const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
-    const mobileActions = document.getElementById('mobile-actions');
-    const mobileUnblock = document.getElementById('mobile-unblock');
-    const mobileRetry = document.getElementById('mobile-retry');
-    let timeout;
-    let poller;
-    let currentJobId;
-    let lastQuery;
-    let guiHeartbeat;
+    const form = document.getElementById('search-form');
+    const input = document.getElementById('search-input');
+    const statusEl = document.getElementById('job-status');
+    const resultsEl = document.getElementById('results');
+    const unblockPanel = document.getElementById('unblock-panel');
+    const unblockLink = document.getElementById('unblock-link');
+    const unblockDone = document.getElementById('unblock-done');
+    const unblockDetails = document.getElementById('unblock-details');
+    const leclercGuiPort = {{ leclerc_gui_port }};
 
-    async function setLeclercGuiActive(active) {
-      await fetch('/leclerc/gui/active', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active }),
-      });
+    let currentJobId = null;
+    let pollTimer = null;
+    let unblockTimer = null;
+
+    function getGuiUrl() {
+      const host = window.location.hostname;
+      return `https://${host}:${leclercGuiPort}/`;
     }
 
-    function notifyLeclercGuiActive(active) {
-      const payload = JSON.stringify({ active });
-      if (navigator.sendBeacon) {
-        const blob = new Blob([payload], { type: 'application/json' });
-        navigator.sendBeacon('/leclerc/gui/active', blob);
+    function setStatus(text, badge) {
+      statusEl.innerHTML = badge
+        ? `<strong>${text}</strong> <span class="status-badge ${badge}">${badge.replace('status-', '').toUpperCase()}</span>`
+        : text;
+    }
+
+    function renderResults(items) {
+      if (!items || items.length === 0) {
+        resultsEl.innerHTML = '<div class="muted">Aucun résultat pour le moment.</div>';
         return;
       }
-      fetch('/leclerc/gui/active', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true,
-      });
+      resultsEl.innerHTML = items.map(item => {
+        return `
+          <div class="result-card">
+            <strong>${item.title || 'Produit'}</strong>
+            <div class="muted">${item.price != null ? `${item.price} €` : 'Prix indisponible'}</div>
+            ${item.store ? `<div class="muted">${item.store}</div>` : ''}
+            ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener">Voir</a>` : ''}
+          </div>
+        `;
+      }).join('');
     }
 
-    function startGuiHeartbeat() {
-      if (guiHeartbeat) {
-        return;
+    async function fetchJob(jobId) {
+      const resp = await fetch(`/jobs/${jobId}`);
+      if (!resp.ok) {
+        setStatus('Erreur récupération job.', 'status-failed');
+        return null;
       }
-      setLeclercGuiActive(true);
-      guiHeartbeat = setInterval(() => setLeclercGuiActive(true), 20000);
+      return await resp.json();
     }
 
-    function stopGuiHeartbeat() {
-      if (guiHeartbeat) {
-        clearInterval(guiHeartbeat);
-        guiHeartbeat = null;
-      }
-      setLeclercGuiActive(false);
-    }
-
-    leclercUnblockLink.href = leclercGuiHttpsUrl;
-    mobileUnblock.href = leclercGuiHttpsUrl;
-
-    [leclercUnblockLink, mobileUnblock].forEach((link) => {
-      link.addEventListener('click', () => notifyLeclercGuiActive(true));
-    });
-    async function handleLeclercDone() {
+    async function pollJob() {
       if (!currentJobId) {
         return;
       }
-      if (poller) {
-        clearInterval(poller);
+      const job = await fetchJob(currentJobId);
+      if (!job) {
+        return;
       }
-      leclercUnblockDone.disabled = true;
-      mobileRetry.disabled = true;
-      jobStatus.textContent = 'Relance en cours...';
-      stopGuiHeartbeat();
+      if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+        setStatus(`Job #${job.id}`, `status-${job.status.toLowerCase()}`);
+        renderResults(job.result?.items || []);
+        unblockPanel.hidden = true;
+        return;
+      }
+      if (job.status === 'BLOCKED') {
+        setStatus(`Job #${job.id}`, 'status-blocked');
+        renderResults(job.result?.items || []);
+        unblockPanel.hidden = false;
+        unblockDetails.textContent = job.error || job.result?.reason || '';
+        return;
+      }
+      if (job.status === 'SUCCEEDED') {
+        setStatus(`Job #${job.id}`, 'status-success');
+        renderResults(job.result?.items || []);
+        unblockPanel.hidden = true;
+        clearInterval(pollTimer);
+        return;
+      }
+      if (job.status === 'FAILED') {
+        setStatus(`Job #${job.id}`, 'status-failed');
+        renderResults(job.result?.items || []);
+        unblockPanel.hidden = true;
+        unblockDetails.textContent = job.error || 'Erreur inconnue';
+        clearInterval(pollTimer);
+      }
+    }
+
+    async function pollUnblockState() {
+      const resp = await fetch('/leclerc/unblock/status');
+      if (!resp.ok) {
+        return;
+      }
+      const data = await resp.json();
+      if (data.blocked && data.job_id) {
+        currentJobId = data.job_id;
+        unblockPanel.hidden = false;
+        unblockDetails.textContent = data.reason || '';
+      }
+    }
+
+    unblockLink.href = getGuiUrl();
+
+    unblockDone.addEventListener('click', async () => {
+      if (!currentJobId) {
+        return;
+      }
+      unblockDone.disabled = true;
       try {
-        const resp = await fetch('/leclerc/unblock/done', {
+        await fetch('/leclerc/unblock/done', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ job_id: currentJobId }),
         });
-        if (!resp.ok) {
-          throw new Error('Retry failed');
-        }
-        const data = await resp.json();
-        const retryJobId = data.job_id || currentJobId;
-        const retryResp = await fetch(`/jobs/${retryJobId}/retry`, { method: 'POST' });
-        if (!retryResp.ok) {
-          throw new Error('Retry failed');
-        }
-        const retryData = await retryResp.json();
-        currentJobId = retryData.job_id;
-        jobStatus.innerHTML = `
-          <strong>Job #${currentJobId}</strong>
-          <span class="status-badge status-running">RUNNING</span>
-        `;
-        poller = setInterval(async () => {
-          const done = await pollJob(currentJobId);
-          if (done) {
-            clearInterval(poller);
-          }
-        }, 1000);
-      } catch (error) {
-        jobStatus.textContent = "Impossible de relancer la recherche.";
       } finally {
-        leclercUnblockDone.disabled = false;
-        mobileRetry.disabled = false;
+        unblockDone.disabled = false;
       }
-    }
-
-    leclercUnblockDone.addEventListener('click', handleLeclercDone);
-    mobileRetry.addEventListener('click', handleLeclercDone);
-
-    search.addEventListener('input', () => {
-      clearTimeout(timeout);
-      const query = search.value.trim();
-      if (!query) {
-        results.innerHTML = '';
-        return;
-      }
-      timeout = setTimeout(async () => {
-        const resp = await fetch(`/products/search?q=${encodeURIComponent(query)}`);
-        const data = await resp.json();
-        const localItems = data.map(item => {
-          return `
-            <div class="result-card">
-              <strong>#${item.id} - ${item.name}</strong>
-              <div class="muted">${item.brand || 'N/A'} ${item.size || ''} ${item.unit || ''}</div>
-            </div>
-          `;
-        }).join('');
-        results.innerHTML = localItems
-          ? `<div class="results-grid">${localItems}</div>`
-          : '<div class="muted">Aucun résultat</div>';
-      }, 250);
     });
 
-    function getBadgeInfo(job) {
-      if (job.status === 'BLOCKED' || job.result?.reason === 'DATADOME_BLOCKED') {
-        return { label: 'BLOCKED', className: 'status-blocked' };
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const query = input.value.trim();
+      if (!query) {
+        setStatus('Veuillez saisir une recherche.');
+        return;
       }
-      const label = job.status === 'DONE' ? 'SUCCESS' : job.status;
-      return { label, className: `status-${label.toLowerCase()}` };
-    }
-
-    function renderJob(job) {
-      currentJobId = job.id;
-      const badge = getBadgeInfo(job);
-      jobStatus.innerHTML = `
-        <strong>Job #${job.id}</strong>
-        <span class="status-badge ${badge.className}">${badge.label}</span>
-      `;
-      if (job.status === 'DONE') {
-        leclercUnblock.hidden = true;
-        mobileActions.hidden = true;
-        stopGuiHeartbeat();
-        const items = (job.result?.items || []).map(item => {
-          const price = item.price != null ? `${item.price} €` : 'N/A';
-          const unitPrice = item.unit_price != null ? `${item.unit_price} ${item.unit || ''}` : '';
-          return `
-            <div class="result-card">
-              <strong>${item.title || 'Produit'}</strong>
-              <div class="muted">${item.brand || 'Marque inconnue'}</div>
-              <div class="muted">${price} ${unitPrice}</div>
-              <div class="muted">${item.url || ''}</div>
-            </div>
-          `;
-        }).join('');
-        jobResults.innerHTML = items
-          ? `<div class="results-grid">${items}</div>`
-          : '<div class="muted">Aucun résultat côté Leclerc.</div>';
-      } else if (job.status === 'FAILED' || job.status === 'BLOCKED') {
-        const debug = job.result?.debug || {};
-        const reason = job.result?.reason || job.error || '';
-        const details = [
-          debug.network_log ? `Network: ${debug.network_log}` : null,
-          debug.blocked_url ? `URL: ${debug.blocked_url}` : null,
-          debug.blocked_png ? `Screenshot: ${debug.blocked_png}` : null,
-          debug.blocked_html ? `HTML: ${debug.blocked_html}` : null,
-          debug.error_png ? `Screenshot: ${debug.error_png}` : null,
-          debug.error_html ? `HTML: ${debug.error_html}` : null,
-        ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
-        if (job.status === 'BLOCKED' || reason === 'DATADOME_BLOCKED' || reason === 'LECLERC_CDP_UNAVAILABLE') {
-          const instruction = debug.instruction || '';
-          leclercUnblock.hidden = false;
-          mobileActions.hidden = false;
-          startGuiHeartbeat();
-          jobResults.innerHTML = `
-            <div class="muted">
-              ${reason === 'LECLERC_CDP_UNAVAILABLE'
-                ? 'Le navigateur Leclerc n\'est pas prêt. Ouvrez la GUI pour lancer Chromium, puis relancez.'
-                : 'Leclerc a bloqué l\'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer (captcha/login).'}
-            </div>
-            ${instruction ? `<div class="muted">${instruction}</div>` : ''}
-            ${details ? `<div class="muted">${details}</div>` : ''}
-          `;
-        } else if (reason === 'GUI_ACTIVE') {
-          leclercUnblock.hidden = false;
-          mobileActions.hidden = false;
-          startGuiHeartbeat();
-          jobResults.innerHTML = `
-            <div class="muted">
-              Le navigateur distant est actif. Terminez la session puis cliquez "J'ai terminé".
-            </div>
-            ${details ? `<div class="muted">${details}</div>` : ''}
-          `;
-        } else {
-          leclercUnblock.hidden = true;
-          mobileActions.hidden = true;
-          stopGuiHeartbeat();
-          jobResults.innerHTML = `
-            <div class="muted">La recherche a échoué: ${job.error || 'Erreur inconnue'}.</div>
-            ${details ? `<div class="muted">${details}</div>` : ''}
-          `;
-        }
-      } else {
-        leclercUnblock.hidden = true;
-        mobileActions.hidden = true;
-        stopGuiHeartbeat();
-        jobResults.innerHTML = '<div class="muted">Recherche en cours...</div>';
-      }
-    }
-
-    async function pollJob(jobId) {
-      const resp = await fetch(`/jobs/${jobId}`);
-      if (!resp.ok) {
-        jobStatus.textContent = 'Impossible de récupérer le job.';
-        return true;
-      }
-      const job = await resp.json();
-      renderJob(job);
-      return job.status === 'DONE' || job.status === 'FAILED' || job.status === 'BLOCKED';
-    }
-
-    async function startSearch(query) {
-      jobStatus.textContent = 'Création du job...';
-      jobResults.innerHTML = '';
-      if (poller) {
-        clearInterval(poller);
-      }
+      resultsEl.innerHTML = '';
+      unblockPanel.hidden = true;
       const resp = await fetch('/jobs/retailer-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ retailer: 'leclerc', query }),
       });
       if (!resp.ok) {
-        jobStatus.textContent = 'Impossible de lancer la recherche.';
+        setStatus('Impossible de lancer le job.', 'status-failed');
         return;
       }
       const data = await resp.json();
-      const initialBadge = getBadgeInfo({ status: data.status });
-      jobStatus.innerHTML = `
-        <strong>Job #${data.job_id}</strong>
-        <span class="status-badge ${initialBadge.className}">${initialBadge.label}</span>
-      `;
       currentJobId = data.job_id;
-      poller = setInterval(async () => {
-        const done = await pollJob(data.job_id);
-        if (done) {
-          clearInterval(poller);
-        }
-      }, 1000);
-    }
-
-    searchForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const query = search.value.trim();
-      if (!query) {
-        jobStatus.textContent = 'Veuillez saisir une recherche.';
-        return;
+      setStatus(`Job #${currentJobId}`, 'status-queued');
+      if (pollTimer) {
+        clearInterval(pollTimer);
       }
-      lastQuery = query;
-      await startSearch(query);
+      pollTimer = setInterval(pollJob, 1500);
     });
+
+    pollUnblockState();
+    if (unblockTimer) {
+      clearInterval(unblockTimer);
+    }
+    unblockTimer = setInterval(pollUnblockState, 3000);
   </script>
 </body>
 </html>
