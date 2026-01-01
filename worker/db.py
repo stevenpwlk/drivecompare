@@ -3,6 +3,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 DB_PATH = os.getenv("DB_PATH", "/data/drivecompare.db")
 
@@ -24,140 +25,124 @@ def get_conn():
         conn.close()
 
 
-def ensure_job_columns() -> None:
+def init_db() -> None:
     with get_conn() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
-        if "blocked_url" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_url TEXT")
-        if "blocked_reason" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_reason TEXT")
-        if "blocked_at" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_at TEXT")
-        if "retry_requested" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN retry_requested INTEGER NOT NULL DEFAULT 0")
-
-
-def ensure_key_value_table() -> None:
-    with get_conn() as conn:
-        conn.execute(
+        conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                retailer TEXT NOT NULL,
+                query TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error TEXT,
+                result_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS unblock_state (
+                job_id INTEGER PRIMARY KEY,
+                url TEXT,
+                reason TEXT,
+                active INTEGER NOT NULL DEFAULT 0,
+                done INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS key_value (
                 key TEXT PRIMARY KEY,
                 value TEXT
-            )
+            );
             """
         )
 
 
-def fetch_one(query: str, params: tuple = ()):
+def fetch_one(query: str, params: tuple = ()) -> dict[str, Any] | None:
     with get_conn() as conn:
         cur = conn.execute(query, params)
         row = cur.fetchone()
         return dict(row) if row else None
 
 
-def fetch_all(query: str, params: tuple = ()):
-    with get_conn() as conn:
-        cur = conn.execute(query, params)
-        return [dict(row) for row in cur.fetchall()]
-
-
-def execute(query: str, params: tuple = ()): 
+def execute(query: str, params: tuple = ()) -> int:
     with get_conn() as conn:
         cur = conn.execute(query, params)
         return cur.lastrowid
 
 
-def update_job(job_id: int, status: str, result: dict | None = None, error: str | None = None):
-    execute(
+def fetch_next_job() -> dict[str, Any] | None:
+    return fetch_one(
         """
-        UPDATE jobs
-        SET status = ?, result = ?, error = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (status, json.dumps(result or {}), error, utc_now(), job_id),
+        SELECT id, retailer, query, status, created_at, updated_at
+        FROM jobs
+        WHERE status = 'QUEUED'
+        ORDER BY created_at ASC
+        LIMIT 1
+        """
     )
 
 
-def update_job_blocked(
-    job_id: int,
-    reason: str,
-    blocked_url: str | None,
-    blocked_at: str,
-    result: dict | None = None,
-    error: str | None = None,
-):
-    execute(
-        """
-        UPDATE jobs
-        SET status = 'BLOCKED',
-            result = ?,
-            error = ?,
-            blocked_url = ?,
-            blocked_reason = ?,
-            blocked_at = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            json.dumps(result or {}),
-            error,
-            blocked_url,
-            reason,
-            blocked_at,
-            utc_now(),
-            job_id,
-        ),
-    )
-
-
-def mark_job_running(job_id: int):
+def mark_job_running(job_id: int) -> None:
     execute(
         "UPDATE jobs SET status = 'RUNNING', updated_at = ? WHERE id = ?",
         (utc_now(), job_id),
     )
 
 
-def mark_job_retrying(job_id: int):
+def mark_job_blocked(
+    job_id: int,
+    reason: str | None,
+    *,
+    result: dict[str, Any] | None = None,
+) -> None:
     execute(
         """
         UPDATE jobs
-        SET status = 'RUNNING', retry_requested = 0, updated_at = ?
+        SET status = 'BLOCKED', result_json = ?, error = ?, updated_at = ?
         WHERE id = ?
         """,
+        (json.dumps(result or {}), reason, utc_now(), job_id),
+    )
+
+
+def mark_job_failed(job_id: int, error: str, result: dict[str, Any] | None = None) -> None:
+    execute(
+        """
+        UPDATE jobs
+        SET status = 'FAILED', result_json = ?, error = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (json.dumps(result or {}), error, utc_now(), job_id),
+    )
+
+
+def mark_job_succeeded(job_id: int, result: dict[str, Any]) -> None:
+    execute(
+        """
+        UPDATE jobs
+        SET status = 'SUCCEEDED', result_json = ?, error = NULL, updated_at = ?
+        WHERE id = ?
+        """,
+        (json.dumps(result or {}), utc_now(), job_id),
+    )
+
+
+def clear_unblock_state(job_id: int) -> None:
+    execute(
+        "UPDATE unblock_state SET active = 0, done = 0, updated_at = ? WHERE job_id = ?",
         (utc_now(), job_id),
     )
 
 
-def enqueue_job(job_type: str, payload: dict | None = None) -> int:
-    return execute(
+def get_unblock_state(job_id: int) -> dict[str, Any] | None:
+    return fetch_one(
         """
-        INSERT INTO jobs (type, status, payload, created_at, updated_at)
-        VALUES (?, 'PENDING', ?, ?, ?)
+        SELECT job_id, url, reason, active, done, updated_at
+        FROM unblock_state
+        WHERE job_id = ?
         """,
-        (job_type, json.dumps(payload or {}), utc_now(), utc_now()),
+        (job_id,),
     )
 
 
-def get_key_value(key: str) -> str | None:
-    row = fetch_one("SELECT value FROM key_value WHERE key = ?", (key,))
-    return row["value"] if row else None
-
-
-def set_key_value(key: str, value: str) -> None:
-    execute(
-        """
-        INSERT INTO key_value (key, value)
-        VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (key, value),
-    )
-
-
-def delete_key_value(key: str) -> None:
-    execute("DELETE FROM key_value WHERE key = ?", (key,))
-
-
-ensure_job_columns()
-ensure_key_value_table()
+init_db()

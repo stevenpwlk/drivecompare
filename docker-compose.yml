@@ -8,7 +8,6 @@ services:
     volumes:
       - ./data:/data
       - ./logs:/logs
-      - ./sessions:/sessions
     command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   worker:
@@ -18,38 +17,30 @@ services:
     env_file:
       - .env
     environment:
-      - LECLERC_CDP_URL=http://leclerc-gui:9222
+      - LECLERC_BACKEND_URL=http://backend:8000
+      - LECLERC_CDP_URL=http://leclerc-browser:9222
     volumes:
       - ./data:/data
       - ./logs:/logs
-      - ./sessions:/sessions
     depends_on:
       backend:
         condition: service_started
-      leclerc-gui:
+      leclerc-browser:
         condition: service_healthy
 
-  leclerc-gui:
-    image: lscr.io/linuxserver/chromium:latest
+  leclerc-browser:
+    build: ./browser
     ports:
-      - "5801:3001"
+      - "5801:5801"
     expose:
       - "9222"
     volumes:
-      - ./sessions/leclerc_profile:/config
+      - ./data/leclerc_profile:/profiles/leclerc
     environment:
       - TZ=Europe/Paris
-      - PUID=1000
-      - PGID=1000
-      - UMASK=022
-      - CHROME_CLI=--app=http://backend:8000/leclerc/unblock --no-first-run --no-default-browser-check --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
-      - CUSTOM_USER
-      - PASSWORD
+      - LECLERC_START_URL=https://www.e.leclerc/
     shm_size: "1gb"
     restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9222/json/version"]
       interval: 5s
