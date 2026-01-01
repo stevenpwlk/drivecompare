@@ -10,7 +10,17 @@ from typing import Any
 import schedule
 from playwright.sync_api import sync_playwright
 
-from db import enqueue_job, fetch_all, fetch_one, mark_job_running, update_job
+from db import (
+    enqueue_job,
+    fetch_all,
+    fetch_one,
+    mark_job_retrying,
+    mark_job_running,
+    set_key_value,
+    update_job,
+    update_job_blocked,
+    utc_now,
+)
 from retailers import auchan, leclerc
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
@@ -209,9 +219,14 @@ def handle_retailer_search(job):
                 error="Leclerc GUI/CDP non prêt",
             )
             return
+        ws_endpoint = None
+        if cdp_payload.get("version"):
+            ws_endpoint = cdp_payload["version"].get("webSocketDebuggerUrl")
+        logging.info("CDP ready%s", f" (ws: {ws_endpoint})" if ws_endpoint else "")
         browser = p.chromium.connect_over_cdp(LECLERC_CDP_URL)
+        logging.info("connect_over_cdp success")
         context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.pages[0] if context.pages else context.new_page()
+        page = context.new_page()
         try:
             retailer = leclerc.LeclercRetailer(
                 page,
@@ -240,7 +255,24 @@ def handle_retailer_search(job):
 
     if error_message:
         status = "BLOCKED" if error_message == "DATADOME_BLOCKED" else "FAILED"
-        update_job(job["id"], status, result=result, error=error_message)
+        if status == "BLOCKED":
+            blocked_url = (result.get("debug") or {}).get("blocked_url")
+            blocked_at = utc_now()
+            update_job_blocked(
+                job["id"],
+                error_message,
+                blocked_url,
+                blocked_at,
+                result=result,
+                error=error_message,
+            )
+            set_key_value("blocked_job_id", str(job["id"]))
+            if blocked_url:
+                set_key_value("blocked_url", blocked_url)
+            set_key_value("blocked_reason", error_message)
+            set_key_value("blocked_at", blocked_at)
+        else:
+            update_job(job["id"], status, result=result, error=error_message)
     else:
         update_job(job["id"], "DONE", result=result)
 
@@ -281,6 +313,31 @@ def run_playwright_job(job, runner):
 
 def job_loop():
     while True:
+        retry_jobs = fetch_all(
+            """
+            SELECT id, type, payload
+            FROM jobs
+            WHERE retry_requested = 1
+              AND status IN ('BLOCKED', 'FAILED')
+            ORDER BY updated_at ASC
+            LIMIT 5
+            """
+        )
+        for job in retry_jobs:
+            payload = json.loads(job["payload"])
+            job["payload"] = payload
+            mark_job_retrying(job["id"])
+            attempt = 0
+            while attempt <= JOB_RETRIES:
+                try:
+                    process_job(job)
+                    break
+                except Exception as error:
+                    logging.exception("Retry job failed (attempt %s)", attempt + 1)
+                    attempt += 1
+                    if attempt > JOB_RETRIES:
+                        update_job(job["id"], "FAILED", error=str(error))
+
         pending = fetch_all(
             """
             SELECT id, type, payload

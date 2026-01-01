@@ -23,19 +23,22 @@
         <div><strong>Action requise: captcha Leclerc</strong></div>
         <div class="muted">
           Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
-          Utilisez en priorité le lien HTTP (port 5800) pour mobile.
+          Utilisez en priorité le lien HTTPS (port 5801), avec un fallback HTTP (port 5800).
+        </div>
+        <div class="warning">
+          Safari bloque parfois http, utilisez HTTPS.
         </div>
         <div class="actions">
           <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
-            Ouvrir Leclerc (déblocage)
+            Ouvrir Leclerc (HTTPS)
           </a>
           <a id="leclerc-unblock-link-https" class="button-link secondary" target="_blank" rel="noopener">
-            Ouvrir Leclerc (HTTPS)
+            Ouvrir Leclerc (HTTP)
           </a>
           <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
         </div>
       </div>
-      <div id="job-status" class="muted"></div>
+      <div id="job-status" class="status-panel muted"></div>
       <div id="job-results"></div>
       <h3>Résultats locaux</h3>
       <div id="results"></div>
@@ -77,12 +80,13 @@
   </main>
   <div id="mobile-actions" class="mobile-actions" hidden>
     <a id="mobile-unblock" class="button-link" target="_blank" rel="noopener">
-      Débloquer Leclerc
-    </a>
-    <a id="mobile-unblock-https" class="button-link secondary" target="_blank" rel="noopener">
       Débloquer Leclerc (HTTPS)
     </a>
+    <a id="mobile-unblock-https" class="button-link secondary" target="_blank" rel="noopener">
+      Débloquer Leclerc (HTTP)
+    </a>
     <button type="button" id="mobile-retry">Relancer</button>
+    <div class="warning">Safari bloque parfois http, utilisez HTTPS.</div>
   </div>
 
   <script>
@@ -129,23 +133,14 @@
       });
     }
 
-    leclercUnblockLink.href = leclercGuiHttpUrl;
-    leclercUnblockLinkHttps.href = leclercGuiHttpsUrl;
-    mobileUnblock.href = leclercGuiHttpUrl;
-    mobileUnblockHttps.href = leclercGuiHttpsUrl;
+    leclercUnblockLink.href = leclercGuiHttpsUrl;
+    leclercUnblockLinkHttps.href = leclercGuiHttpUrl;
+    mobileUnblock.href = leclercGuiHttpsUrl;
+    mobileUnblockHttps.href = leclercGuiHttpUrl;
 
     [leclercUnblockLink, leclercUnblockLinkHttps, mobileUnblock, mobileUnblockHttps].forEach((link) => {
       link.addEventListener('click', () => notifyLeclercGuiActive(true));
     });
-    async function retryJob(jobId) {
-      const resp = await fetch(`/jobs/${jobId}/retry`, { method: 'POST' });
-      if (!resp.ok) {
-        throw new Error('Retry failed');
-      }
-      const data = await resp.json();
-      return data.job_id;
-    }
-
     async function handleLeclercDone() {
       if (!currentJobId) {
         return;
@@ -156,15 +151,20 @@
       leclercUnblockDone.disabled = true;
       mobileRetry.disabled = true;
       try {
-        await fetch('/leclerc/unblock/done', { method: 'POST' });
-        const newJobId = await retryJob(currentJobId);
-        currentJobId = newJobId;
+        const resp = await fetch('/leclerc/unblock/done', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: currentJobId }),
+        });
+        if (!resp.ok) {
+          throw new Error('Retry failed');
+        }
         jobStatus.innerHTML = `
-          <strong>Job #${newJobId}</strong>
-          <span class="status-badge status-pending">PENDING</span>
+          <strong>Job #${currentJobId}</strong>
+          <span class="status-badge status-running">RUNNING</span>
         `;
         poller = setInterval(async () => {
-          const done = await pollJob(newJobId);
+          const done = await pollJob(currentJobId);
           if (done) {
             clearInterval(poller);
           }

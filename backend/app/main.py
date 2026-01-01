@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import execute, fetch_all, fetch_one, insert_job
+from .db import execute, fetch_all, fetch_one, insert_job, request_job_retry
 from .leclerc_state import (
     DEFAULT_LECLERC_FALLBACK_URL,
     clear_blocked_url,
@@ -276,10 +276,19 @@ def set_leclerc_gui_active(payload: dict[str, Any]):
 
 
 @app.post("/leclerc/unblock/done")
-def leclerc_unblock_done():
+def leclerc_unblock_done(payload: dict[str, Any]):
+    job_id = payload.get("job_id")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    job = fetch_one("SELECT id, status FROM jobs WHERE id = ?", (job_id,))
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job["status"] not in {"BLOCKED", "FAILED"}:
+        raise HTTPException(status_code=409, detail="Job is not retryable")
+    request_job_retry(job_id)
     clear_blocked_url()
     set_gui_active(False)
-    return {"ok": True}
+    return {"ok": True, "job_id": job_id}
 
 
 @app.post("/leclerc/blocked/clear")

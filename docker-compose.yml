@@ -23,8 +23,10 @@ services:
       - ./logs:/logs
       - ./sessions:/sessions
     depends_on:
-      - backend
-      - leclerc-gui
+      backend:
+        condition: service_started
+      leclerc-gui:
+        condition: service_healthy
 
   leclerc-gui:
     image: lscr.io/linuxserver/chromium:latest
@@ -43,3 +45,9 @@ services:
       - PASSWORD
     shm_size: "1gb"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9222/json/version"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s

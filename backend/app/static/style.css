@@ -66,9 +66,14 @@ button, .button-link {
 
 .actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+
+.actions .button-link,
+.actions button {
+  width: 100%;
 }
 
 ul {
@@ -96,6 +101,24 @@ li {
 .hint {
   font-size: 0.85rem;
   color: #444;
+}
+
+.warning {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: #fff1f2;
+  color: #9f1239;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: #f3f4f6;
+  font-weight: 600;
 }
 
 .results-grid {
@@ -149,8 +172,8 @@ li {
   padding: 0.75rem 1rem;
   border-top: 1px solid #e5e7eb;
   display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  justify-content: space-between;
   box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
 }
 
@@ -180,14 +203,6 @@ li {
 
   .card {
     padding: 1.1rem;
-  }
-
-  .actions {
-    flex-direction: column;
-  }
-
-  .mobile-actions {
-    flex-direction: column;
   }
 
   h1, h2 {

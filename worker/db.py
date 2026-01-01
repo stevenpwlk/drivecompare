@@ -24,6 +24,19 @@ def get_conn():
         conn.close()
 
 
+def ensure_job_columns() -> None:
+    with get_conn() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "blocked_url" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_url TEXT")
+        if "blocked_reason" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_reason TEXT")
+        if "blocked_at" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN blocked_at TEXT")
+        if "retry_requested" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN retry_requested INTEGER NOT NULL DEFAULT 0")
+
+
 def fetch_one(query: str, params: tuple = ()):
     with get_conn() as conn:
         cur = conn.execute(query, params)
@@ -54,9 +67,52 @@ def update_job(job_id: int, status: str, result: dict | None = None, error: str 
     )
 
 
+def update_job_blocked(
+    job_id: int,
+    reason: str,
+    blocked_url: str | None,
+    blocked_at: str,
+    result: dict | None = None,
+    error: str | None = None,
+):
+    execute(
+        """
+        UPDATE jobs
+        SET status = 'BLOCKED',
+            result = ?,
+            error = ?,
+            blocked_url = ?,
+            blocked_reason = ?,
+            blocked_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(result or {}),
+            error,
+            blocked_url,
+            reason,
+            blocked_at,
+            utc_now(),
+            job_id,
+        ),
+    )
+
+
 def mark_job_running(job_id: int):
     execute(
         "UPDATE jobs SET status = 'RUNNING', updated_at = ? WHERE id = ?",
+        (utc_now(), job_id),
+    )
+
+
+def mark_job_retrying(job_id: int):
+    execute(
+        """
+        UPDATE jobs
+        SET status = 'RUNNING', retry_requested = 0, updated_at = ?
+        WHERE id = ?
+        """,
         (utc_now(), job_id),
     )
 
@@ -89,3 +145,6 @@ def set_key_value(key: str, value: str) -> None:
 
 def delete_key_value(key: str) -> None:
     execute("DELETE FROM key_value WHERE key = ?", (key,))
+
+
+ensure_job_columns()
