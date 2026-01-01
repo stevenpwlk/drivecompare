@@ -83,8 +83,8 @@ Le worker reste en mode headless pour les recherches quotidiennes. Pour créer u
 
 1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 2. Lancer une recherche Leclerc.
-3. Si DataDome bloque, l'app ouvre automatiquement `https://<IP>:5801` (navigateur distant).
-4. Le bouton **Ouvrir Leclerc (déblocage)** active le verrou `GUI_ACTIVE` et ouvre le navigateur distant.
+3. Si DataDome bloque, l'app affiche des liens pour ouvrir `https://<IP>:5801` (navigateur distant).
+4. Le lien **Ouvrir Leclerc (déblocage)** active le verrou `GUI_ACTIVE` et ouvre le navigateur distant.
 5. Dans le navigateur distant:
    - Passer le captcha/login.
    - Sélectionner le magasin si demandé (l'URL par défaut est `LECLERC_STORE_URL`).
@@ -103,10 +103,27 @@ Il démarre en mode "app" sur `/leclerc/unblock`, qui redirige automatiquement v
 DataDome ou vers `LECLERC_STORE_URL`.
 Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
 
-- `LECLERC_GUI_USER`
-- `LECLERC_GUI_PASS`
+- `CUSTOM_USER`
+- `PASSWORD`
 
+Laissez ces variables absentes si vous ne souhaitez pas activer l'authentification.
 Voir `.env.example` pour les variables disponibles.
+
+### Fix leclerc-gui 500 (permissions /config)
+
+Si `https://<IP>:5801` renvoie `Internal Server Error`, les permissions du profil Chromium sont
+probablement incorrectes. Exécutez:
+
+```bash
+mkdir -p sessions/leclerc_profile
+sudo chown -R 1000:1000 sessions/leclerc_profile
+```
+
+Ou utilisez le script:
+
+```bash
+./tools/fix_permissions.sh
+```
 
 ### Dépannage
 
