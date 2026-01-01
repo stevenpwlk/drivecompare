@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -118,7 +119,9 @@ class LeclercRetailer:
     def __init__(self, page: Page) -> None:
         self.page = page
         self.logger = logging.getLogger(__name__)
-        self.log_dir = LOG_DIR
+        self.log_dir = LOG_DIR / "leclerc"
+        self._network_entries: list[dict[str, Any]] = []
+        self._network_handlers: dict[str, Any] = {}
 
     def _timestamp(self) -> int:
         return int(time.time())
@@ -126,11 +129,76 @@ class LeclercRetailer:
     def _ensure_dirs(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
+    def _start_network_capture(self) -> None:
+        self._network_entries = []
+
+        def on_response(response) -> None:
+            try:
+                request = response.request
+                self._network_entries.append(
+                    {
+                        "url": response.url,
+                        "status": response.status,
+                        "method": request.method,
+                        "resource_type": request.resource_type,
+                        "ok": response.ok,
+                    }
+                )
+            except Exception:
+                self.logger.debug("Failed to capture response", exc_info=True)
+
+        def on_request_failed(request) -> None:
+            try:
+                self._network_entries.append(
+                    {
+                        "url": request.url,
+                        "status": None,
+                        "method": request.method,
+                        "resource_type": request.resource_type,
+                        "ok": False,
+                        "failure": request.failure,
+                    }
+                )
+            except Exception:
+                self.logger.debug("Failed to capture request failure", exc_info=True)
+
+        self.page.on("response", on_response)
+        self.page.on("requestfailed", on_request_failed)
+        self._network_handlers = {
+            "response": on_response,
+            "requestfailed": on_request_failed,
+        }
+
+    def _stop_network_capture(self) -> None:
+        if not self._network_handlers:
+            return
+        for event, handler in self._network_handlers.items():
+            try:
+                self.page.off(event, handler)
+            except Exception:
+                self.logger.debug("Failed to detach network handler", exc_info=True)
+        self._network_handlers = {}
+
+    def _build_network_summary(self) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "total_entries": len(self._network_entries),
+            "by_status": {},
+            "by_resource": {},
+            "entries": self._network_entries[-200:],
+        }
+        for entry in self._network_entries:
+            status = entry.get("status")
+            resource = entry.get("resource_type")
+            summary["by_status"][str(status)] = summary["by_status"].get(str(status), 0) + 1
+            summary["by_resource"][str(resource)] = summary["by_resource"].get(str(resource), 0) + 1
+        return summary
+
     def _capture_artifacts(self, label: str) -> dict[str, str]:
         self._ensure_dirs()
         stamp = self._timestamp()
         screenshot_path = self.log_dir / f"leclerc_{label}_{stamp}.png"
         html_path = self.log_dir / f"leclerc_{label}_{stamp}.html"
+        network_path = self.log_dir / f"leclerc_{label}_{stamp}_network.json"
         try:
             self.page.screenshot(path=str(screenshot_path), full_page=True)
         except Exception:
@@ -139,11 +207,19 @@ class LeclercRetailer:
             html_path.write_text(self.page.content(), encoding="utf-8")
         except Exception:
             self.logger.exception("Failed to capture HTML")
+        try:
+            network_path.write_text(
+                json.dumps(self._build_network_summary(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            self.logger.exception("Failed to capture network summary")
         payload = {"screenshot": str(screenshot_path), "html": str(html_path)}
         try:
             payload["url"] = self.page.url
         except Exception:
             payload["url"] = None
+        payload["network"] = str(network_path)
         return payload
 
     def _handle_cookie_banner(self) -> None:
@@ -246,53 +322,63 @@ class LeclercRetailer:
 
     def search(self, query: str, limit: int = 20) -> SearchResult:
         self._ensure_dirs()
+        self._start_network_capture()
         self.page.set_default_timeout(DEFAULT_TIMEOUT_MS)
-        self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
-        self._handle_cookie_banner()
         try:
-            self.page.wait_for_load_state("networkidle", timeout=4000)
-        except Exception:
-            self.page.wait_for_timeout(1000)
+            self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
+            self._handle_cookie_banner()
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception:
+                self.page.wait_for_timeout(1000)
 
-        html = self.page.content()
-        url = self.page.url
-        title = None
-        try:
-            title = self.page.title()
-        except Exception:
+            html = self.page.content()
+            url = self.page.url
             title = None
-        if is_datadome_block(html, url, title):
-            artifacts = self._capture_artifacts("blocked")
-            raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
+            try:
+                title = self.page.title()
+            except Exception:
+                title = None
+            if is_datadome_block(html, url, title):
+                artifacts = self._capture_artifacts("blocked")
+                raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
 
-        used_input = self._search_with_input(query)
-        if not used_input:
+            used_input = self._search_with_input(query)
+            if not used_input:
+                parsed = urlparse(LECLERC_STORE_URL)
+                base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
+                search_url = f"{base}/recherche.aspx?Texte={quote_plus(query)}"
+                self.page.goto(search_url, wait_until="domcontentloaded")
+
+            self._handle_cookie_banner()
+            html = self.page.content()
+            url = self.page.url
+            try:
+                title = self.page.title()
+            except Exception:
+                title = None
+            if is_datadome_block(html, url, title):
+                artifacts = self._capture_artifacts("blocked")
+                raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
+
             parsed = urlparse(LECLERC_STORE_URL)
-            base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
-            search_url = f"{base}/recherche.aspx?Texte={quote_plus(query)}"
-            self.page.goto(search_url, wait_until="domcontentloaded")
-
-        self._handle_cookie_banner()
-        html = self.page.content()
-        url = self.page.url
-        try:
-            title = self.page.title()
+            base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
+            items = self._parse_search_results(limit, base_url)
+            debug = {
+                "final_url": url,
+                "page_title": title,
+            }
+            if not items:
+                debug.update(self._capture_artifacts("noresults"))
+            return SearchResult(items=items, debug=debug)
+        except LeclercBlocked:
+            raise
         except Exception:
-            title = None
-        if is_datadome_block(html, url, title):
-            artifacts = self._capture_artifacts("blocked")
-            raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
-
-        parsed = urlparse(LECLERC_STORE_URL)
-        base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
-        items = self._parse_search_results(limit, base_url)
-        debug = {
-            "final_url": url,
-            "page_title": title,
-        }
-        if not items:
-            debug.update(self._capture_artifacts("noresults"))
-        return SearchResult(items=items, debug=debug)
+            self._capture_artifacts("error")
+            self.logger.exception("Leclerc search failed")
+            raise
+        finally:
+            self._stop_network_capture()
 
 
 __all__ = [

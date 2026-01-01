@@ -37,7 +37,7 @@ def retailer_search(payload: dict[str, Any]):
     retailer = (payload.get("retailer") or "leclerc").lower()
     if retailer != "leclerc":
         raise HTTPException(status_code=400, detail="Only leclerc is supported")
-    query = (payload.get("query") or "").strip()
+    query = (payload.get("query") or payload.get("q") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
     job_id = create_job(retailer, query)
