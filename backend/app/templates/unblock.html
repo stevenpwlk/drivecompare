@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Déblocage Leclerc</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Déblocage Leclerc</h1>
+
+    <section class="card card-highlight">
+      <h2>Action requise</h2>
+      <p class="muted">
+        Ouvrez la GUI HTTPS du navigateur Leclerc, résolvez le captcha/login, puis cliquez sur
+        <strong>"J'ai terminé"</strong> pour relancer automatiquement la collecte.
+      </p>
+      <div class="actions">
+        <a id="unblock-link" class="button-link" target="_blank" rel="noopener">
+          Ouvrir Leclerc (HTTPS)
+        </a>
+        <button id="unblock-done" type="button">J'ai terminé</button>
+      </div>
+      <div id="unblock-details" class="muted"></div>
+      <div id="job-status" class="status-panel muted">Aucun blocage actif.</div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById('job-status');
+    const unblockLink = document.getElementById('unblock-link');
+    const unblockDone = document.getElementById('unblock-done');
+    const unblockDetails = document.getElementById('unblock-details');
+    const leclercGuiPort = {{ leclerc_gui_port }};
+    let currentJobId = null;
+
+    function getGuiUrl() {
+      const host = window.location.hostname;
+      return `https://${host}:${leclercGuiPort}/`;
+    }
+
+    function setStatus(text, badge) {
+      statusEl.innerHTML = badge
+        ? `<strong>${text}</strong> <span class="status-badge ${badge}">${badge.replace('status-', '').toUpperCase()}</span>`
+        : text;
+    }
+
+    function renderUnblockDetails(reason, url) {
+      const parts = [];
+      if (reason) {
+        parts.push(reason);
+      }
+      if (url) {
+        parts.push(`URL: ${url}`);
+      }
+      unblockDetails.textContent = parts.join(' • ');
+    }
+
+    async function pollUnblockState() {
+      const resp = await fetch('/leclerc/unblock/status');
+      if (!resp.ok) {
+        return;
+      }
+      const data = await resp.json();
+      if (data.blocked && data.job_id) {
+        currentJobId = data.job_id;
+        renderUnblockDetails(data.reason, data.unblock_url);
+        setStatus(`Blocage actif pour le job #${data.job_id}`, 'status-blocked');
+        return;
+      }
+      currentJobId = null;
+      renderUnblockDetails('', '');
+      setStatus('Aucun blocage actif.', null);
+    }
+
+    unblockLink.href = getGuiUrl();
+
+    unblockDone.addEventListener('click', async () => {
+      if (!currentJobId) {
+        return;
+      }
+      unblockDone.disabled = true;
+      try {
+        await fetch('/leclerc/unblock/done', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: currentJobId }),
+        });
+      } finally {
+        unblockDone.disabled = false;
+      }
+    });
+
+    pollUnblockState();
+    setInterval(pollUnblockState, 3000);
+  </script>
+</body>
+</html>

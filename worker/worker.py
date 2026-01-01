@@ -22,7 +22,7 @@ from retailers.leclerc import LeclercBlocked, LeclercRetailer, ensure_page, open
 LOG_DIR = os.getenv("LOG_DIR", "/logs")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 LECLERC_BACKEND_URL = os.getenv("LECLERC_BACKEND_URL", "http://backend:8000")
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-browser:9222")
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
 UNBLOCK_POLL_INTERVAL = int(os.getenv("UNBLOCK_POLL_INTERVAL", "3"))
 UNBLOCK_TIMEOUT = int(os.getenv("UNBLOCK_TIMEOUT", "900"))
 MAX_BLOCK_RETRIES = int(os.getenv("MAX_BLOCK_RETRIES", "2"))

@@ -13,7 +13,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sy
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
 DEFAULT_TIMEOUT_MS = int(os.getenv("LECLERC_TIMEOUT_MS", "15000"))
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-browser:9222")
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
