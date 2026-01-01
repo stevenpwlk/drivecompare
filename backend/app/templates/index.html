@@ -23,7 +23,10 @@
         <div class="muted">
           Ouvrez le navigateur distant, passez le captcha/login, revenez et relancez la recherche.
         </div>
-        <button type="button" id="leclerc-unblock-button">Débloquer Leclerc</button>
+        <div class="actions">
+          <button type="button" id="leclerc-unblock-button">Ouvrir Leclerc (déblocage)</button>
+          <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
+        </div>
       </div>
       <div id="job-status" class="muted"></div>
       <div id="job-results"></div>
@@ -76,15 +79,30 @@
     const leclercGuiUrl = `https://${host}:5801/`;
     const leclercUnblock = document.getElementById('leclerc-unblock');
     const leclercUnblockButton = document.getElementById('leclerc-unblock-button');
+    const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
     let timeout;
     let poller;
     let lastAutoOpenJobId = null;
 
-    function openLeclercGui() {
+    async function setLeclercGuiActive(active) {
+      await fetch('/leclerc/gui/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active }),
+      });
+    }
+
+    async function openLeclercGui() {
+      await setLeclercGuiActive(true);
       window.open(leclercGuiUrl, "_blank", "noopener");
     }
 
-    leclercUnblockButton.addEventListener('click', openLeclercGui);
+    leclercUnblockButton.addEventListener('click', () => {
+      openLeclercGui();
+    });
+    leclercUnblockDone.addEventListener('click', async () => {
+      await setLeclercGuiActive(false);
+    });
 
     search.addEventListener('input', () => {
       clearTimeout(timeout);
@@ -123,6 +141,7 @@
         const reason = job.result?.reason || job.error || '';
         const details = [
           debug.network_log ? `Network: ${debug.network_log}` : null,
+          debug.blocked_url ? `URL: ${debug.blocked_url}` : null,
           debug.blocked_png ? `Screenshot: ${debug.blocked_png}` : null,
           debug.blocked_html ? `HTML: ${debug.blocked_html}` : null,
           debug.error_png ? `Screenshot: ${debug.error_png}` : null,
@@ -140,6 +159,14 @@
               Leclerc a bloqué l'accès automatique (DataDome). Le navigateur distant va s'ouvrir.
             </div>
             ${instruction ? `<div class="muted">${instruction}</div>` : ''}
+            ${details ? `<div class="muted">${details}</div>` : ''}
+          `;
+        } else if (reason === 'GUI_ACTIVE') {
+          leclercUnblock.hidden = false;
+          jobResults.innerHTML = `
+            <div class="muted">
+              Le navigateur distant est actif. Terminez la session puis cliquez "J'ai terminé".
+            </div>
             ${details ? `<div class="muted">${details}</div>` : ''}
           `;
         } else {

@@ -33,7 +33,7 @@ services:
       - ./sessions/leclerc_profile:/config
     environment:
       - TZ=Europe/Paris
-      - CHROME_CLI=${LECLERC_STORE_URL}
+      - CHROME_CLI=--app=http://backend:8000/leclerc/unblock --no-first-run --no-default-browser-check
       - CUSTOM_USER=${LECLERC_GUI_USER:-}
       - PASSWORD=${LECLERC_GUI_PASS:-}
     shm_size: "1gb"

@@ -69,3 +69,23 @@ def enqueue_job(job_type: str, payload: dict | None = None) -> int:
         """,
         (job_type, json.dumps(payload or {}), utc_now(), utc_now()),
     )
+
+
+def get_key_value(key: str) -> str | None:
+    row = fetch_one("SELECT value FROM key_value WHERE key = ?", (key,))
+    return row["value"] if row else None
+
+
+def set_key_value(key: str, value: str) -> None:
+    execute(
+        """
+        INSERT INTO key_value (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def delete_key_value(key: str) -> None:
+    execute("DELETE FROM key_value WHERE key = ?", (key,))
