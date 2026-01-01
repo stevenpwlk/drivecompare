@@ -83,7 +83,7 @@ Le worker pilote **le même navigateur** que l'UI Leclerc (Chromium) via CDP. Po
 
 1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 2. Lancer une recherche Leclerc.
-3. Si DataDome bloque, l'app affiche des liens pour ouvrir `http://<IP>:5801` (navigateur distant).
+3. Si DataDome bloque, l'app affiche des liens pour ouvrir `http://<IP>:5800` (HTTP) ou `https://<IP>:5801` (HTTPS) dans le navigateur distant.
 4. Tapez **Ouvrir Leclerc (déblocage)** pour ouvrir le navigateur distant (tap utilisateur requis sur mobile).
 5. Dans le navigateur distant:
    - Passer le captcha/login.
@@ -126,6 +126,15 @@ Ou utilisez le script:
 
 ```bash
 ./tools/fix_permissions.sh
+```
+
+### Diagnostic CDP
+
+Vérifier que Chromium écoute bien sur le port CDP (9222) dans le conteneur:
+
+```bash
+docker compose exec leclerc-gui ss -lntp | grep 9222
+docker compose exec leclerc-gui curl -s http://127.0.0.1:9222/json/version
 ```
 
 ### Dépannage
