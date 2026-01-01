@@ -84,15 +84,19 @@ Le worker reste en mode headless pour les recherches quotidiennes. Pour créer u
 1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 2. Lancer une recherche Leclerc.
 3. Si DataDome bloque, l'app affiche des liens pour ouvrir `https://<IP>:5801` (navigateur distant).
-4. Le lien **Ouvrir Leclerc (déblocage)** active le verrou `GUI_ACTIVE` et ouvre le navigateur distant.
+4. Tapez **Ouvrir Leclerc (déblocage)** pour ouvrir le navigateur distant (tap utilisateur requis sur mobile).
 5. Dans le navigateur distant:
    - Passer le captcha/login.
    - Sélectionner le magasin si demandé (l'URL par défaut est `LECLERC_STORE_URL`).
-6. Revenir sur DriveCompare et cliquer **J'ai terminé** pour libérer le verrou (`GUI_ACTIVE`).
+6. Revenir sur DriveCompare et cliquer **J'ai terminé** pour libérer le verrou et effacer l'URL bloquée.
 7. Relancer la recherche.
 
 La session est persistée dans `./sessions/leclerc_profile` et réutilisée par Playwright headless.
 Si le verrou `GUI_ACTIVE` est actif, le worker refuse le job Leclerc pour éviter la corruption du profil.
+L'état Leclerc est stocké dans des fichiers `/sessions`:
+
+- `leclerc_gui_active.lock`
+- `leclerc_last_blocked_url.txt`
 
 > Note: le presse-papier automatique peut nécessiter HTTPS côté navigateur distant. Sinon, utilisez le panneau clipboard si présent.
 

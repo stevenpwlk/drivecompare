@@ -20,6 +20,8 @@ BASE_URL = os.getenv("LECLERC_BASE_URL", "https://www.e.leclerc/")
 LECLERC_PROFILE_DIR = Path(
     os.getenv("LECLERC_PROFILE_DIR", str(SESSIONS_DIR / "leclerc_profile"))
 )
+BLOCKED_URL_PATH = SESSIONS_DIR / "leclerc_last_blocked_url.txt"
+GUI_LOCK_PATH = SESSIONS_DIR / "leclerc_gui_active.lock"
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
@@ -36,6 +38,19 @@ def is_datadome_block(page_html: str) -> bool:
 
 def persistent_profile_exists(profile_dir: Path = LECLERC_PROFILE_DIR) -> bool:
     return profile_dir.exists()
+
+
+def set_blocked_url(url: str) -> None:
+    if not url:
+        return
+    BLOCKED_URL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = BLOCKED_URL_PATH.with_suffix(".tmp")
+    temp_path.write_text(url, encoding="utf-8")
+    temp_path.replace(BLOCKED_URL_PATH)
+
+
+def is_gui_active() -> bool:
+    return GUI_LOCK_PATH.exists()
 
 
 class LeclercBlocked(RuntimeError):
@@ -517,6 +532,12 @@ class LeclercRetailer:
                     html = self.page.content()
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
+                        blocked_url = blocked_paths.get("blocked_url")
+                        if blocked_url:
+                            try:
+                                set_blocked_url(blocked_url)
+                            except Exception:
+                                self.logger.exception("Failed to persist blocked URL")
                         blocked_paths["network_log"] = str(network_log)
                         blocked_paths["instruction"] = (
                             "Ouvrir Leclerc GUI pour créer/rafraîchir la session."
@@ -534,6 +555,12 @@ class LeclercRetailer:
                     html = self.page.content()
                     if is_datadome_block(html):
                         blocked_paths = self._capture_blocked_artifacts(html)
+                        blocked_url = blocked_paths.get("blocked_url")
+                        if blocked_url:
+                            try:
+                                set_blocked_url(blocked_url)
+                            except Exception:
+                                self.logger.exception("Failed to persist blocked URL")
                         blocked_paths["network_log"] = str(network_log)
                         blocked_paths["instruction"] = (
                             "Ouvrir Leclerc GUI pour créer/rafraîchir la session."

@@ -20,7 +20,7 @@
         <button type="submit">Lancer la recherche Leclerc</button>
       </form>
       <div id="leclerc-unblock" class="hint card-highlight" hidden>
-        <div><strong>Leclerc bloqué</strong></div>
+        <div><strong>Leclerc bloqué: action requise (captcha/login)</strong></div>
         <div class="muted">
           Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
         </div>
@@ -107,6 +107,10 @@
       });
     }
 
+    async function clearLeclercBlocked() {
+      await fetch('/leclerc/blocked/clear', { method: 'POST' });
+    }
+
     function notifyLeclercGuiActive(active) {
       const payload = JSON.stringify({ active });
       if (navigator.sendBeacon) {
@@ -131,6 +135,7 @@
     });
     leclercUnblockDone.addEventListener('click', async () => {
       await setLeclercGuiActive(false);
+      await clearLeclercBlocked();
     });
     mobileRetry.addEventListener('click', () => {
       searchForm.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
@@ -209,7 +214,7 @@
           mobileActions.hidden = false;
           jobResults.innerHTML = `
             <div class="muted">
-              Leclerc a bloqué l'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer.
+              Leclerc a bloqué l'accès automatique (DataDome). Ouvrez le navigateur distant pour débloquer (captcha/login).
             </div>
             ${instruction ? `<div class="muted">${instruction}</div>` : ''}
             ${details ? `<div class="muted">${details}</div>` : ''}

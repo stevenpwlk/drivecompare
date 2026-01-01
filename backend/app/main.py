@@ -8,7 +8,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import delete_key_value, execute, fetch_all, fetch_one, get_key_value, insert_job, set_key_value
+from .db import execute, fetch_all, fetch_one, insert_job
+from .leclerc_state import (
+    DEFAULT_LECLERC_FALLBACK_URL,
+    clear_blocked_url,
+    get_blocked_url,
+    is_gui_active,
+    set_gui_active,
+)
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
@@ -19,7 +26,6 @@ LECLERC_STORE_URL = os.getenv(
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
 )
 LECLERC_PROFILE_DIR = Path(os.getenv("LECLERC_PROFILE_DIR", "/sessions/leclerc_profile"))
-GUI_ACTIVE_FILE = LECLERC_PROFILE_DIR / ".gui_active"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -232,20 +238,29 @@ def get_job(job_id: int):
 
 @app.get("/leclerc/unblock")
 def leclerc_unblock():
-    blocked_url = get_key_value("leclerc_blocked_url")
-    target_url = blocked_url or LECLERC_STORE_URL
-    return RedirectResponse(target_url, status_code=302)
+    try:
+        blocked_url = get_blocked_url()
+        target_url = blocked_url or LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
+        return RedirectResponse(target_url, status_code=302)
+    except Exception:
+        fallback = LECLERC_STORE_URL or DEFAULT_LECLERC_FALLBACK_URL
+        return RedirectResponse(fallback, status_code=302)
 
 
 @app.post("/leclerc/gui/active")
 def set_leclerc_gui_active(payload: dict[str, Any]):
     active = bool(payload.get("active"))
     LECLERC_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    if active:
-        GUI_ACTIVE_FILE.write_text("active", encoding="utf-8")
-    else:
-        if GUI_ACTIVE_FILE.exists():
-            GUI_ACTIVE_FILE.unlink()
-        delete_key_value("leclerc_gui_active")
-    set_key_value("leclerc_gui_active", "true" if active else "false")
+    set_gui_active(active)
     return {"active": active}
+
+
+@app.post("/leclerc/blocked/clear")
+def clear_leclerc_blocked():
+    clear_blocked_url()
+    return {"cleared": True}
+
+
+@app.get("/leclerc/gui/status")
+def get_leclerc_gui_status():
+    return {"active": is_gui_active(), "blocked_url": get_blocked_url()}
