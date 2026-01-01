@@ -20,16 +20,13 @@
         <button type="submit">Lancer la recherche Leclerc</button>
       </form>
       <div id="leclerc-unblock" class="hint card-highlight" hidden>
-        <div><strong>Leclerc bloqué: action requise (captcha/login)</strong></div>
+        <div><strong>Action requise: captcha Leclerc</strong></div>
         <div class="muted">
           Ouvrez le navigateur distant pour passer le captcha/login, puis revenez relancer la recherche.
         </div>
         <div class="actions">
           <a id="leclerc-unblock-link" class="button-link" target="_blank" rel="noopener">
             Ouvrir Leclerc (déblocage)
-          </a>
-          <a id="leclerc-unblock-same-tab" class="button-link secondary">
-            Ouvrir dans cet onglet
           </a>
           <button type="button" id="leclerc-unblock-done">J'ai terminé</button>
         </div>
@@ -88,16 +85,16 @@
     const jobStatus = document.getElementById('job-status');
     const jobResults = document.getElementById('job-results');
     const host = window.location.hostname;
-    const leclercGuiUrl = `https://${host}:5801/`;
+    const leclercGuiUrl = `http://${host}:5801/`;
     const leclercUnblock = document.getElementById('leclerc-unblock');
     const leclercUnblockLink = document.getElementById('leclerc-unblock-link');
-    const leclercUnblockSameTab = document.getElementById('leclerc-unblock-same-tab');
     const leclercUnblockDone = document.getElementById('leclerc-unblock-done');
     const mobileActions = document.getElementById('mobile-actions');
     const mobileUnblock = document.getElementById('mobile-unblock');
     const mobileRetry = document.getElementById('mobile-retry');
     let timeout;
     let poller;
+    let currentJobId;
 
     async function setLeclercGuiActive(active) {
       await fetch('/leclerc/gui/active', {
@@ -105,10 +102,6 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ active }),
       });
-    }
-
-    async function clearLeclercBlocked() {
-      await fetch('/leclerc/blocked/clear', { method: 'POST' });
     }
 
     function notifyLeclercGuiActive(active) {
@@ -127,19 +120,53 @@
     }
 
     leclercUnblockLink.href = leclercGuiUrl;
-    leclercUnblockSameTab.href = leclercGuiUrl;
     mobileUnblock.href = leclercGuiUrl;
 
-    [leclercUnblockLink, leclercUnblockSameTab, mobileUnblock].forEach((link) => {
+    [leclercUnblockLink, mobileUnblock].forEach((link) => {
       link.addEventListener('click', () => notifyLeclercGuiActive(true));
     });
-    leclercUnblockDone.addEventListener('click', async () => {
-      await setLeclercGuiActive(false);
-      await clearLeclercBlocked();
-    });
-    mobileRetry.addEventListener('click', () => {
-      searchForm.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-    });
+    async function retryJob(jobId) {
+      const resp = await fetch(`/jobs/${jobId}/retry`, { method: 'POST' });
+      if (!resp.ok) {
+        throw new Error('Retry failed');
+      }
+      const data = await resp.json();
+      return data.job_id;
+    }
+
+    async function handleLeclercDone() {
+      if (!currentJobId) {
+        return;
+      }
+      if (poller) {
+        clearInterval(poller);
+      }
+      leclercUnblockDone.disabled = true;
+      mobileRetry.disabled = true;
+      try {
+        await fetch('/leclerc/unblock/done', { method: 'POST' });
+        const newJobId = await retryJob(currentJobId);
+        currentJobId = newJobId;
+        jobStatus.innerHTML = `
+          <strong>Job #${newJobId}</strong>
+          <span class="status-badge status-pending">PENDING</span>
+        `;
+        poller = setInterval(async () => {
+          const done = await pollJob(newJobId);
+          if (done) {
+            clearInterval(poller);
+          }
+        }, 1000);
+      } catch (error) {
+        jobStatus.textContent = "Impossible de relancer la recherche.";
+      } finally {
+        leclercUnblockDone.disabled = false;
+        mobileRetry.disabled = false;
+      }
+    }
+
+    leclercUnblockDone.addEventListener('click', handleLeclercDone);
+    mobileRetry.addEventListener('click', handleLeclercDone);
 
     search.addEventListener('input', () => {
       clearTimeout(timeout);
@@ -166,7 +193,7 @@
     });
 
     function getBadgeInfo(job) {
-      if (job.status === 'FAILED' && job.result?.reason === 'DATADOME_BLOCKED') {
+      if (job.status === 'BLOCKED' || job.result?.reason === 'DATADOME_BLOCKED') {
         return { label: 'BLOCKED', className: 'status-blocked' };
       }
       const label = job.status === 'DONE' ? 'SUCCESS' : job.status;
@@ -174,6 +201,7 @@
     }
 
     function renderJob(job) {
+      currentJobId = job.id;
       const badge = getBadgeInfo(job);
       jobStatus.innerHTML = `
         <strong>Job #${job.id}</strong>
@@ -197,7 +225,7 @@
         jobResults.innerHTML = items
           ? `<div class="results-grid">${items}</div>`
           : '<div class="muted">Aucun résultat côté Leclerc.</div>';
-      } else if (job.status === 'FAILED') {
+      } else if (job.status === 'FAILED' || job.status === 'BLOCKED') {
         const debug = job.result?.debug || {};
         const reason = job.result?.reason || job.error || '';
         const details = [
@@ -208,7 +236,7 @@
           debug.error_png ? `Screenshot: ${debug.error_png}` : null,
           debug.error_html ? `HTML: ${debug.error_html}` : null,
         ].filter(Boolean).map(line => `<div>${line}</div>`).join('');
-        if (reason === 'DATADOME_BLOCKED') {
+        if (job.status === 'BLOCKED' || reason === 'DATADOME_BLOCKED') {
           const instruction = debug.instruction || '';
           leclercUnblock.hidden = false;
           mobileActions.hidden = false;
@@ -251,7 +279,7 @@
       }
       const job = await resp.json();
       renderJob(job);
-      return job.status === 'DONE' || job.status === 'FAILED';
+      return job.status === 'DONE' || job.status === 'FAILED' || job.status === 'BLOCKED';
     }
 
     searchForm.addEventListener('submit', async (event) => {
@@ -281,6 +309,7 @@
         <strong>Job #${data.job_id}</strong>
         <span class="status-badge ${initialBadge.className}">${initialBadge.label}</span>
       `;
+      currentJobId = data.job_id;
       poller = setInterval(async () => {
         const done = await pollJob(data.job_id);
         if (done) {

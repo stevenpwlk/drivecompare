@@ -72,26 +72,25 @@ Le store Leclerc est configurable via `LECLERC_STORE_URL` (ex: autre drive en ch
 ## Leclerc: protection anti-bot (DataDome)
 
 Leclerc peut renvoyer une page de blocage DataDome (`Access blocked` / `captcha-delivery.com`).
-Dans ce cas, la recherche échoue en `FAILED` avec la raison `DATADOME_BLOCKED` et des artefacts sont générés:
+Dans ce cas, la recherche échoue en `BLOCKED` avec la raison `DATADOME_BLOCKED` et des artefacts sont générés:
 
 - `/logs/leclerc_blocked_*.html`
 - `/logs/leclerc_blocked_*.png`
 
 ### Session Leclerc via GUI (mobile-first)
 
-Le worker reste en mode headless pour les recherches quotidiennes. Pour créer une session valide sur mobile (LAN):
+Le worker pilote **le même navigateur** que l'UI Leclerc (Chromium) via CDP. Pour créer une session valide sur mobile (LAN):
 
 1. Ouvrir DriveCompare sur mobile (`http://<IP>:8000`).
 2. Lancer une recherche Leclerc.
-3. Si DataDome bloque, l'app affiche des liens pour ouvrir `https://<IP>:5801` (navigateur distant).
+3. Si DataDome bloque, l'app affiche des liens pour ouvrir `http://<IP>:5801` (navigateur distant).
 4. Tapez **Ouvrir Leclerc (déblocage)** pour ouvrir le navigateur distant (tap utilisateur requis sur mobile).
 5. Dans le navigateur distant:
    - Passer le captcha/login.
    - Sélectionner le magasin si demandé (l'URL par défaut est `LECLERC_STORE_URL`).
-6. Revenir sur DriveCompare et cliquer **J'ai terminé** pour libérer le verrou et effacer l'URL bloquée.
-7. Relancer la recherche.
+6. Revenir sur DriveCompare et cliquer **J'ai terminé** pour libérer le verrou, effacer l'URL bloquée et relancer la recherche automatiquement.
 
-La session est persistée dans `./sessions/leclerc_profile` et réutilisée par Playwright headless.
+La session est persistée dans `./sessions/leclerc_profile` et réutilisée par le worker via CDP.
 Si le verrou `GUI_ACTIVE` est actif, le worker refuse le job Leclerc pour éviter la corruption du profil.
 L'état Leclerc est stocké dans des fichiers `/sessions`:
 
@@ -104,7 +103,7 @@ L'état Leclerc est stocké dans des fichiers `/sessions`:
 
 Le service `leclerc-gui` expose une interface web sur `https://<IP>:5801` (HTTPS) et `http://<IP>:5800` (HTTP).
 Il démarre en mode "app" sur `/leclerc/unblock`, qui redirige automatiquement vers la dernière URL bloquée
-DataDome ou vers `LECLERC_STORE_URL`.
+DataDome ou vers `LECLERC_STORE_URL`. Un port CDP interne est activé (9222) pour que le worker pilote le même navigateur.
 Pour éviter un accès libre sur le LAN, l'image `lscr.io/linuxserver/chromium` supporte:
 
 - `CUSTOM_USER`
