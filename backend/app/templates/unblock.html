@@ -23,6 +23,11 @@
         <button id="unblock-done" type="button">J'ai terminé</button>
       </div>
       <div id="unblock-details" class="muted"></div>
+      {% if blocked_url %}
+      <p class="muted">
+        Dernière URL bloquée: <a href="{{ blocked_url }}" target="_blank" rel="noopener">{{ blocked_url }}</a>
+      </p>
+      {% endif %}
       <div id="job-status" class="status-panel muted">Aucun blocage actif.</div>
     </section>
   </main>
@@ -32,13 +37,8 @@
     const unblockLink = document.getElementById('unblock-link');
     const unblockDone = document.getElementById('unblock-done');
     const unblockDetails = document.getElementById('unblock-details');
-    const leclercGuiPort = {{ leclerc_gui_port }};
+    const defaultGuiUrl = {{ leclerc_gui_url|tojson }};
     let currentJobId = null;
-
-    function getGuiUrl() {
-      const host = window.location.hostname;
-      return `https://${host}:${leclercGuiPort}/`;
-    }
 
     function setStatus(text, badge) {
       statusEl.innerHTML = badge
@@ -63,6 +63,9 @@
         return;
       }
       const data = await resp.json();
+      if (data.unblock_url) {
+        unblockLink.href = data.unblock_url;
+      }
       if (data.blocked && data.job_id) {
         currentJobId = data.job_id;
         renderUnblockDetails(data.reason, data.unblock_url);
@@ -74,7 +77,7 @@
       setStatus('Aucun blocage actif.', null);
     }
 
-    unblockLink.href = getGuiUrl();
+    unblockLink.href = defaultGuiUrl;
 
     unblockDone.addEventListener('click', async () => {
       if (!currentJobId) {

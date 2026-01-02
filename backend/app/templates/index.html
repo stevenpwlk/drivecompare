@@ -52,16 +52,11 @@
     const unblockLink = document.getElementById('unblock-link');
     const unblockDone = document.getElementById('unblock-done');
     const unblockDetails = document.getElementById('unblock-details');
-    const leclercGuiPort = {{ leclerc_gui_port }};
+    const defaultGuiUrl = {{ leclerc_gui_url|tojson }};
 
     let currentJobId = null;
     let pollTimer = null;
     let unblockTimer = null;
-
-    function getGuiUrl() {
-      const host = window.location.hostname;
-      return `https://${host}:${leclercGuiPort}/`;
-    }
 
     function setStatus(text, badge) {
       statusEl.innerHTML = badge
@@ -149,6 +144,9 @@
         return;
       }
       const data = await resp.json();
+      if (data.unblock_url) {
+        unblockLink.href = data.unblock_url;
+      }
       if (data.blocked && data.job_id) {
         currentJobId = data.job_id;
         unblockPanel.hidden = false;
@@ -156,7 +154,7 @@
       }
     }
 
-    unblockLink.href = getGuiUrl();
+    unblockLink.href = defaultGuiUrl;
 
     unblockDone.addEventListener('click', async () => {
       if (!currentJobId) {
