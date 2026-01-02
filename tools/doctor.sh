@@ -22,3 +22,7 @@ echo
 echo "== backend health =="
 curl -fsS http://127.0.0.1:8000/health || true
 echo
+
+echo "== backend leclerc search =="
+curl -fsS "http://127.0.0.1:8000/api/leclerc/search?q=test" | head -c 200
+echo
