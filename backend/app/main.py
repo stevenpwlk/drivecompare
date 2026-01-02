@@ -23,6 +23,7 @@ app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
 templates = Jinja2Templates(directory="backend/app/templates")
 
 LECLERC_GUI_PORT = int(os.getenv("LECLERC_GUI_PORT", "5801"))
+LECLERC_GUI_SCHEME = os.getenv("LECLERC_GUI_SCHEME", "http")
 PUBLIC_HOST = os.getenv("PUBLIC_HOST")
 
 
@@ -55,7 +56,7 @@ def _build_gui_url(request: Request | None) -> str:
             or request.url.hostname
         )
     host = _normalize_host(host) or "localhost"
-    return f"https://{host}:{LECLERC_GUI_PORT}"
+    return f"{LECLERC_GUI_SCHEME}://{host}:{LECLERC_GUI_PORT}"
 
 
 def _build_unblock_response(

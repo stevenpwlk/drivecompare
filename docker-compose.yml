@@ -8,72 +8,69 @@ services:
     volumes:
       - ./data:/data
       - ./logs:/logs
-    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\"",
-        ]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
       interval: 10s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  leclerc-gui:
+    image: lscr.io/linuxserver/chromium:latest
+    ports:
+      - "5800:3000"  # noVNC HTTP
+      - "5801:3001"  # noVNC HTTPS (optionnel)
+    volumes:
+      - leclerc_config:/config
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      # Pour éviter les soucis de droits en LXC + bind mounts : on laisse Docker gérer le volume /config.
+      # Si tu tiens à bind-mount ./sessions/leclerc -> /config, ajoute PUID/PGID adaptés.
+      - PUID=0
+      - PGID=0
+      - >-
+        CHROME_CLI=--remote-debugging-port=9222
+        --remote-debugging-address=0.0.0.0
+        --remote-allow-origins=*
+        --user-data-dir=/config/cdp-profile
+        --no-sandbox
+        --disable-dev-shm-usage
+        ${LECLERC_UNBLOCK_START_URL:-http://backend:8000/leclerc/unblock}
+    security_opt:
+      - seccomp=unconfined
+    shm_size: "1gb"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9222/json/version > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   worker:
     build: ./worker
     init: true
-    network_mode: "service:leclerc-gui"
     env_file:
       - .env
     environment:
       - LECLERC_BACKEND_URL=http://backend:8000
-      - LECLERC_CDP_URL=http://127.0.0.1:9222
+      - LECLERC_CDP_URL=http://leclerc-gui:9222
     volumes:
       - ./data:/data
       - ./logs:/logs
       - ./sessions:/sessions
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
       leclerc-gui:
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/ready', timeout=3).read()\"",
-        ]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/ready', timeout=3).read()\""]
       interval: 10s
-      timeout: 3s
-      retries: 5
-
-  leclerc-gui:
-    image: lscr.io/linuxserver/chromium:latest
-    ports:
-      - "5800:3000"
-      - "5801:3001"
-    volumes:
-      - ./sessions/leclerc:/config
-    environment:
-      - TZ=Europe/Paris
-      - >-
-        CHROME_CLI=--remote-debugging-port=9222
-        --remote-allow-origins=*
-        --user-data-dir=/config/cdp-profile
-        --no-sandbox
-        --disable-dev-shm-usage
-        http://backend:8000/leclerc/unblock
-    security_opt:
-      - seccomp=unconfined
-    shm_size: "1gb"
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -fsS http://127.0.0.1:9222/json/version > /dev/null",
-        ]
-      interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 10
       start_period: 10s
+
+volumes:
+  leclerc_config:
