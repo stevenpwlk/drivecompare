@@ -157,6 +157,17 @@ def mark_unblock_done(job_id: int) -> None:
     )
 
 
+def clear_unblock_state() -> None:
+    execute(
+        """
+        UPDATE unblock_state
+        SET active = 0, done = 0, updated_at = ?
+        WHERE active = 1
+        """,
+        (utc_now(),),
+    )
+
+
 def get_active_unblock_state() -> dict[str, Any] | None:
     return fetch_one(
         """

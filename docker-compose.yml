@@ -55,7 +55,11 @@ services:
       - ./sessions/leclerc:/config
     environment:
       - TZ=Europe/Paris
-      - CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-sandbox http://backend:8000/leclerc/unblock
+      - >-
+        CHROME_CLI=--remote-debugging-port=9222
+        --remote-debugging-address=0.0.0.0
+        --no-sandbox
+        http://backend:8000/leclerc/unblock
     security_opt:
       - seccomp=unconfined
     shm_size: "1gb"
@@ -64,7 +68,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -kfsS https://127.0.0.1:3001/ > /dev/null && curl -fsS http://127.0.0.1:9222/json/version > /dev/null",
+          "curl -fsS http://127.0.0.1:9222/json/version > /dev/null",
         ]
       interval: 5s
       timeout: 3s

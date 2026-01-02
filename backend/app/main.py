@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .db import (
+    clear_unblock_state,
     create_job,
     fetch_job,
     get_active_unblock_state,
@@ -68,8 +69,9 @@ def _build_unblock_response(state: dict[str, Any] | None, request: Request | Non
             "done": False,
             "updated_at": None,
         }
+    blocked = bool(state["active"]) and not bool(state["done"])
     return {
-        "blocked": bool(state["active"]),
+        "blocked": blocked,
         "job_id": state["job_id"],
         "unblock_url": gui_url,
         "blocked_url": state.get("url"),
@@ -108,6 +110,7 @@ def leclerc_search(payload: dict[str, Any]):
     query = (payload.get("query") or payload.get("q") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
+    clear_unblock_state()
     job_id = create_job("leclerc", query)
     return {"job_id": job_id, "status": "QUEUED"}
 

@@ -6,7 +6,7 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
 
 - **backend (FastAPI)**: API + UI simple (recherche, statut job, actions de déblocage).
 - **worker (Playwright)**: exécute la recherche Leclerc, détecte les blocages, attend le "J'ai terminé".
-- **leclerc-gui**: Chromium avec GUI HTTPS + CDP (port 9222) pour partager la session Leclerc.
+- **leclerc-gui**: Chromium avec GUI HTTPS + CDP (port 9222) pour partager la session Leclerc (CDP accessible aux autres conteneurs via `http://leclerc-gui:9222`).
 - **SQLite**: base persistée dans `./data`.
 
 ## Comment ça marche (flow unblock)
@@ -57,6 +57,8 @@ newgrp docker
   - `GET http://<IP>:8000/health`
   - `GET http://<IP>:9000/ready`
   - `GET http://<IP>:8000/leclerc/unblock/status`
+  - Depuis un conteneur: `curl http://leclerc-gui:9222/json/version`
+  - Depuis l'hôte: pas besoin d'exposer le port 9222 (le CDP est interne au réseau Docker).
 
 ## Diagnostic
 
@@ -90,7 +92,7 @@ Si un port est déjà utilisé sur la machine hôte :
 - `LECLERC_STORE_URL`: URL du magasin Leclerc cible.
 - `LECLERC_STORE_LABEL`: label affiché dans les résultats.
 - `LECLERC_GUI_PORT`: port HTTPS noVNC (par défaut 5801).
-- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://127.0.0.1:9222`).
+- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://leclerc-gui:9222`).
 - `UNBLOCK_TIMEOUT`: délai d'attente max après "J'ai terminé".
 
 ## Comment débloquer DataDome
