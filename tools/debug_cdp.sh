@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LECLERC_CDP_URL=${LECLERC_CDP_URL:-http://127.0.0.1:9222}
+LECLERC_CDP_URL=${LECLERC_CDP_URL:-http://leclerc-gui:9222}
 
 echo "Testing CDP from worker at ${LECLERC_CDP_URL}..."
 docker compose exec -T worker python - <<PY
