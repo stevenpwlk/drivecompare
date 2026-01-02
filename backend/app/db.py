@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 DB_PATH = os.getenv("DB_PATH", "/data/drivecompare.db")
+os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 
 def utc_now() -> str:
