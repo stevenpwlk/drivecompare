@@ -138,6 +138,14 @@
       unblockDetails.textContent = parts.join(' • ');
     }
 
+    function renderUnblockError(message) {
+      if (!message) {
+        return;
+      }
+      unblockDetails.textContent = `Erreur: ${message}`;
+      unblockPanel.hidden = false;
+    }
+
     async function pollUnblockState() {
       const resp = await fetch('/leclerc/unblock/status');
       if (!resp.ok) {
@@ -157,16 +165,30 @@
     unblockLink.href = defaultGuiUrl;
 
     unblockDone.addEventListener('click', async () => {
-      if (!currentJobId) {
-        return;
-      }
       unblockDone.disabled = true;
       try {
-        await fetch('/leclerc/unblock/done', {
+        const statusResp = await fetch('/leclerc/unblock/status');
+        if (!statusResp.ok) {
+          throw new Error('Impossible de récupérer le statut de blocage.');
+        }
+        const statusData = await statusResp.json();
+        const jobId = statusData.job_id || currentJobId;
+        if (!jobId) {
+          throw new Error('Aucun job bloqué trouvé.');
+        }
+        const doneResp = await fetch('/leclerc/unblock/done', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ job_id: currentJobId }),
+          body: JSON.stringify({ job_id: jobId }),
         });
+        if (!doneResp.ok) {
+          const errorPayload = await doneResp.json().catch(() => ({}));
+          const message = errorPayload.detail || 'Impossible de valider le déblocage.';
+          throw new Error(message);
+        }
+        await doneResp.json().catch(() => ({}));
+      } catch (error) {
+        renderUnblockError(error.message || 'Erreur inconnue.');
       } finally {
         unblockDone.disabled = false;
       }

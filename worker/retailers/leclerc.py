@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,25 +20,6 @@ LECLERC_STORE_URL = os.getenv(
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
 )
 LECLERC_STORE_LABEL = os.getenv("LECLERC_STORE_LABEL", "Leclerc")
-
-
-def is_datadome_block(page_html: str, url: str | None = None, title: str | None = None) -> bool:
-    lowered = page_html.lower()
-    checks = [
-        "captcha-delivery.com",
-        "datadome",
-        "access blocked",
-        "unusual activity",
-        "captcha",
-        "service indisponible",
-    ]
-    if any(token in lowered for token in checks):
-        return True
-    if url and any(token in url.lower() for token in ("captcha", "datadome")):
-        return True
-    if title and any(token in title.lower() for token in ("captcha", "accès bloqué")):
-        return True
-    return False
 
 
 class SharedLeclercBrowser:
@@ -193,6 +175,54 @@ class LeclercRetailer:
             summary["by_resource"][str(resource)] = summary["by_resource"].get(str(resource), 0) + 1
         return summary
 
+    def _has_captcha_network(self) -> bool:
+        for entry in self._network_entries:
+            url = (entry.get("url") or "").lower()
+            if "captcha-delivery.com" in url or "ct.captcha-delivery.com" in url:
+                return True
+        return False
+
+    def _has_datadome_iframe(self, html: str) -> bool:
+        lowered = html.lower()
+        return re.search(
+            r"<iframe[^>]+(captcha-delivery\.com|ct\.captcha-delivery\.com|datadome)",
+            lowered,
+        ) is not None
+
+    def _verification_text_present(self, html: str) -> bool:
+        return "verifying the device" in html.lower()
+
+    def _detect_block_reason(
+        self,
+        html: str,
+        url: str | None,
+        title: str | None,
+        main_status: int | None,
+    ) -> str | None:
+        if main_status == 403:
+            return "HTTP_403"
+        if self._has_captcha_network():
+            return "DATADOME_NETWORK"
+        if url:
+            lowered_url = url.lower()
+            if "captcha-delivery.com" in lowered_url or "ct.captcha-delivery.com" in lowered_url:
+                return "DATADOME_URL"
+        if self._has_datadome_iframe(html):
+            return "DATADOME_IFRAME"
+        if self._verification_text_present(html):
+            return "DATADOME_VERIFYING"
+        if title and any(token in title.lower() for token in ("access blocked", "accès bloqué")):
+            return "ACCESS_BLOCKED_TITLE"
+        return None
+
+    def _wait_for_verification(self, url: str | None) -> None:
+        self.logger.info("Datadome verification detected at %s, waiting for completion", url)
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            self.page.wait_for_timeout(1500)
+        self.page.wait_for_timeout(1500)
+
     def _capture_artifacts(self, label: str) -> dict[str, str]:
         self._ensure_dirs()
         stamp = self._timestamp()
@@ -328,13 +358,14 @@ class LeclercRetailer:
         self._start_network_capture()
         self.page.set_default_timeout(DEFAULT_TIMEOUT_MS)
         try:
-            self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
+            response = self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
             self._handle_cookie_banner()
             try:
                 self.page.wait_for_load_state("networkidle", timeout=4000)
             except Exception:
                 self.page.wait_for_timeout(1000)
 
+            main_status = response.status if response else None
             html = self.page.content()
             url = self.page.url
             title = None
@@ -342,27 +373,60 @@ class LeclercRetailer:
                 title = self.page.title()
             except Exception:
                 title = None
-            if is_datadome_block(html, url, title):
+            reason = self._detect_block_reason(html, url, title, main_status)
+            if reason == "DATADOME_VERIFYING":
+                self._wait_for_verification(url)
+                html = self.page.content()
+                url = self.page.url
+                try:
+                    title = self.page.title()
+                except Exception:
+                    title = None
+                reason = self._detect_block_reason(html, url, title, main_status)
+            if reason:
+                self.logger.warning(
+                    "Leclerc blocked detected: url=%s status=%s reason=%s",
+                    url,
+                    main_status,
+                    reason,
+                )
                 artifacts = self._capture_artifacts("blocked")
-                raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
+                raise LeclercBlocked(reason, url, artifacts)
 
             used_input = self._search_with_input(query)
             if not used_input:
                 parsed = urlparse(LECLERC_STORE_URL)
                 base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
                 search_url = f"{base}/recherche.aspx?Texte={quote_plus(query)}"
-                self.page.goto(search_url, wait_until="domcontentloaded")
+                response = self.page.goto(search_url, wait_until="domcontentloaded")
 
             self._handle_cookie_banner()
+            main_status = response.status if response else None
             html = self.page.content()
             url = self.page.url
             try:
                 title = self.page.title()
             except Exception:
                 title = None
-            if is_datadome_block(html, url, title):
+            reason = self._detect_block_reason(html, url, title, main_status)
+            if reason == "DATADOME_VERIFYING":
+                self._wait_for_verification(url)
+                html = self.page.content()
+                url = self.page.url
+                try:
+                    title = self.page.title()
+                except Exception:
+                    title = None
+                reason = self._detect_block_reason(html, url, title, main_status)
+            if reason:
+                self.logger.warning(
+                    "Leclerc blocked detected: url=%s status=%s reason=%s",
+                    url,
+                    main_status,
+                    reason,
+                )
                 artifacts = self._capture_artifacts("blocked")
-                raise LeclercBlocked("DATADOME_BLOCKED", url, artifacts)
+                raise LeclercBlocked(reason, url, artifacts)
 
             parsed = urlparse(LECLERC_STORE_URL)
             base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
