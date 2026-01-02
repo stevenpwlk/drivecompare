@@ -80,8 +80,16 @@ services:
       leclerc-gui:
         condition: service_healthy
     restart: unless-stopped
+    entrypoint: ["socat"]
     command:
       - "-T"
       - "60"
       - "TCP-LISTEN:9223,fork,reuseaddr"
       - "TCP:127.0.0.1:9222"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - socat -T 2 -u /dev/null TCP:127.0.0.1:9223
+      interval: 10s
+      timeout: 3s
+      retries: 10

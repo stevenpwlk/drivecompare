@@ -13,6 +13,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def utcnow_iso() -> str:
+    return utc_now()
+
+
 @contextmanager
 def get_conn():
     conn = sqlite3.connect(DB_PATH)

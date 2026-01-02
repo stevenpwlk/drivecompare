@@ -21,6 +21,11 @@ docker compose up -d --build --force-recreate
 - Si Leclerc te bloque (DataDome), résous le challenge dans ce navigateur.
 - Puis clique "J'ai débloqué" sur la page d'unblock.
 
+## Recherche Leclerc (POC)
+- UI : http://<IP_DU_SERVEUR>:8000/leclerc
+- API : GET /api/leclerc/search?q=coca (optionnel: &limit=20)
+- La recherche passe par le worker CDP, donc l'onglet Leclerc doit être débloqué.
+
 ## Notes
 
 - Le CDP est exposé **uniquement sur le réseau Docker** (pas publié sur l’hôte).
