@@ -144,6 +144,7 @@ def handle_leclerc_job(job: dict[str, Any]) -> None:
                     retailer.capture_artifacts("unblock_timeout")
                 mark_job_failed(job_id, "UNBLOCK_TIMEOUT", {"reason": "timeout"})
                 return
+            logging.info("Unblock done for job %s, resuming scraping", job_id)
             mark_job_running(job_id)
             continue
         except Exception as error:
