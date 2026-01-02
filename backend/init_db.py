@@ -15,14 +15,21 @@ CREATE TABLE IF NOT EXISTS jobs (
     result_json TEXT
 );
 
-CREATE TABLE IF NOT EXISTS unblock_state (
-    job_id INTEGER PRIMARY KEY,
-    url TEXT,
+CREATE TABLE IF NOT EXISTS leclerc_unblock_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    active INTEGER DEFAULT 0,
+    blocked INTEGER DEFAULT 0,
+    done INTEGER DEFAULT 0,
+    job_id INTEGER,
     reason TEXT,
-    active INTEGER NOT NULL DEFAULT 0,
-    done INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
+    blocked_url TEXT,
+    unblock_url TEXT,
+    updated_at TEXT
 );
+
+INSERT OR IGNORE INTO leclerc_unblock_state
+(id, active, blocked, done, updated_at)
+VALUES (1, 0, 0, 0, datetime('now'));
 """
 
 

@@ -23,7 +23,7 @@ import json
 import os
 import urllib.request
 
-url = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222") + "/json/version"
+url = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222") + "/json/version"
 with urllib.request.urlopen(url, timeout=3) as response:
     payload = json.loads(response.read().decode("utf-8"))
 print("CDP OK:", payload.get("Browser"))

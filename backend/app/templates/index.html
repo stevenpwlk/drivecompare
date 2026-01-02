@@ -26,13 +26,13 @@
       <h2>Blocage Leclerc: action requise</h2>
       <p class="muted">
         Leclerc a bloqué l'accès automatique. Ouvrez la GUI HTTPS pour résoudre le captcha/login,
-        puis cliquez sur "J'ai terminé" pour reprendre le job.
+        puis cliquez sur "J'ai débloqué" pour reprendre le job.
       </p>
       <div class="actions">
         <a id="unblock-link" class="button-link" target="_blank" rel="noopener">
-          Ouvrir Leclerc (HTTPS)
+          Ouvrir Leclerc
         </a>
-        <button id="unblock-done" type="button">J'ai terminé</button>
+        <button id="unblock-done" type="button">J'ai débloqué</button>
       </div>
       <div id="unblock-details" class="muted"></div>
     </section>
@@ -57,6 +57,7 @@
     let currentJobId = null;
     let pollTimer = null;
     let unblockTimer = null;
+    let unblockActive = false;
 
     function setStatus(text, badge) {
       statusEl.innerHTML = badge
@@ -101,7 +102,9 @@
       if (job.status === 'QUEUED' || job.status === 'RUNNING') {
         setStatus(`Job #${job.id}`, `status-${job.status.toLowerCase()}`);
         renderResults(job.result?.items || []);
-        unblockPanel.hidden = true;
+        if (!unblockActive) {
+          unblockPanel.hidden = true;
+        }
         return;
       }
       if (job.status === 'BLOCKED') {
@@ -157,9 +160,13 @@
       }
       if (data.blocked && data.job_id) {
         currentJobId = data.job_id;
+        unblockActive = true;
         unblockPanel.hidden = false;
-        renderUnblockDetails(data.reason, data.unblock_url);
+        renderUnblockDetails(data.reason, data.blocked_url);
+        return;
       }
+      unblockActive = false;
+      unblockPanel.hidden = true;
     }
 
     unblockLink.href = defaultGuiUrl;
@@ -167,19 +174,8 @@
     unblockDone.addEventListener('click', async () => {
       unblockDone.disabled = true;
       try {
-        const statusResp = await fetch('/leclerc/unblock/status');
-        if (!statusResp.ok) {
-          throw new Error('Impossible de récupérer le statut de blocage.');
-        }
-        const statusData = await statusResp.json();
-        const jobId = statusData.job_id || currentJobId;
-        if (!jobId) {
-          throw new Error('Aucun job bloqué trouvé.');
-        }
         const doneResp = await fetch('/leclerc/unblock/done', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ job_id: jobId }),
         });
         if (!doneResp.ok) {
           const errorPayload = await doneResp.json().catch(() => ({}));

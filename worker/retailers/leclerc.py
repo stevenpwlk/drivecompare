@@ -3,18 +3,22 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote_plus, urlparse
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "/logs"))
 DEFAULT_TIMEOUT_MS = int(os.getenv("LECLERC_TIMEOUT_MS", "15000"))
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
+LECLERC_BACKEND_URL = os.getenv("LECLERC_BACKEND_URL", "http://backend:8000")
+UNBLOCK_POLL_INTERVAL = int(os.getenv("UNBLOCK_POLL_INTERVAL", "3"))
+UNBLOCK_TIMEOUT = int(os.getenv("UNBLOCK_TIMEOUT", "900"))
+MAX_BLOCK_RETRIES = int(os.getenv("MAX_BLOCK_RETRIES", "2"))
 LECLERC_STORE_URL = os.getenv(
     "LECLERC_STORE_URL",
     "https://fd6-courses.leclercdrive.fr/magasin-175901-175901-seclin-lorival.aspx",
@@ -46,18 +50,18 @@ class SharedLeclercBrowser:
 
     def _connect_over_cdp(self):
         last_error = None
-        for attempt in range(1, 11):
+        for attempt in range(1, 31):
             try:
                 playwright = self._ensure_playwright()
                 return playwright.chromium.connect_over_cdp(self.cdp_url)
             except Exception as exc:
                 last_error = exc
                 self.logger.warning(
-                    "CDP connect attempt %s/10 failed (%s). Retrying...",
+                    "CDP connect attempt %s/30 failed (%s). Retrying...",
                     attempt,
                     exc,
                 )
-                time.sleep(0.5 + 0.25 * (attempt - 1))
+                time.sleep(2)
         raise last_error
 
     def _ensure_context(self):
@@ -94,18 +98,6 @@ def ensure_page() -> Page:
     return _shared_browser.ensure_page()
 
 
-def open_unblock_page(url: str | None) -> None:
-    _shared_browser.open_unblock_page(url)
-
-
-class LeclercBlocked(RuntimeError):
-    def __init__(self, reason: str, blocked_url: str | None, artifacts: dict[str, str]) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.blocked_url = blocked_url
-        self.artifacts = artifacts
-
-
 @dataclass
 class SearchResult:
     items: list[dict[str, Any]]
@@ -113,8 +105,18 @@ class SearchResult:
 
 
 class LeclercRetailer:
-    def __init__(self, page: Page, job_id: int) -> None:
+    def __init__(
+        self,
+        page: Page,
+        job_id: int,
+        *,
+        on_block: Callable[[str, str | None], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
+    ) -> None:
         self.page = page
+        self.job_id = job_id
+        self.on_block = on_block
+        self.on_resume = on_resume
         self.logger = logging.getLogger(__name__)
         self.log_dir = LOG_DIR / "leclerc" / str(job_id)
         self._network_entries: list[dict[str, Any]] = []
@@ -190,53 +192,13 @@ class LeclercRetailer:
             summary["by_resource"][str(resource)] = summary["by_resource"].get(str(resource), 0) + 1
         return summary
 
-    def _has_captcha_network(self) -> bool:
-        for entry in self._network_entries:
-            url = (entry.get("url") or "").lower()
-            if "captcha-delivery.com" in url or "ct.captcha-delivery.com" in url:
-                return True
-        return False
-
-    def _has_datadome_iframe(self, html: str) -> bool:
-        lowered = html.lower()
-        return re.search(
-            r"<iframe[^>]+(captcha-delivery\.com|ct\.captcha-delivery\.com|datadome)",
-            lowered,
-        ) is not None
-
-    def _verification_text_present(self, html: str) -> bool:
-        return "verifying the device" in html.lower()
-
-    def _detect_block_reason(
-        self,
-        html: str,
-        url: str | None,
-        title: str | None,
-        main_status: int | None,
-    ) -> str | None:
-        if main_status == 403:
-            return "HTTP_403"
-        if self._has_captcha_network():
-            return "DATADOME_NETWORK"
-        if url:
-            lowered_url = url.lower()
-            if "captcha-delivery.com" in lowered_url or "ct.captcha-delivery.com" in lowered_url:
-                return "DATADOME_URL"
-        if self._has_datadome_iframe(html):
-            return "DATADOME_IFRAME"
-        if self._verification_text_present(html):
-            return "DATADOME_VERIFYING"
-        if title and any(token in title.lower() for token in ("access blocked", "accès bloqué")):
-            return "ACCESS_BLOCKED_TITLE"
-        return None
-
-    def _wait_for_verification(self, url: str | None) -> None:
-        self.logger.info("Datadome verification detected at %s, waiting for completion", url)
-        try:
-            self.page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            self.page.wait_for_timeout(1500)
-        self.page.wait_for_timeout(1500)
+    def _is_datadome_blocked(self, html: str, url: str | None) -> bool:
+        lowered_html = html.lower()
+        if url and "datadome" in url.lower():
+            return True
+        if "checking your browser" in lowered_html:
+            return True
+        return "datadome" in lowered_html
 
     def _capture_artifacts(self, label: str) -> dict[str, str]:
         self._ensure_dirs()
@@ -287,6 +249,57 @@ class LeclercRetailer:
                 continue
             except Exception:
                 self.logger.debug("Cookie accept failed", exc_info=True)
+
+    def _notify_backend_blocked(self, blocked_url: str | None) -> None:
+        payload = json.dumps(
+            {
+                "job_id": self.job_id,
+                "reason": "DATADOME_BLOCKED",
+                "blocked_url": blocked_url,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{LECLERC_BACKEND_URL}/leclerc/unblock/blocked",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            response.read()
+
+    def _wait_for_unblock_done(self) -> bool:
+        deadline = time.time() + UNBLOCK_TIMEOUT
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"{LECLERC_BACKEND_URL}/leclerc/unblock/status", timeout=5
+                ) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if payload.get("done") is True:
+                    return True
+            except Exception:
+                self.logger.debug("Failed to poll unblock status", exc_info=True)
+            time.sleep(UNBLOCK_POLL_INTERVAL)
+        return False
+
+    def _handle_datadome_block(self, blocked_url: str | None) -> None:
+        if self.on_block:
+            self.on_block("DATADOME_BLOCKED", blocked_url)
+        try:
+            self._notify_backend_blocked(blocked_url)
+        except Exception:
+            self.logger.exception("Failed to notify backend of blocked state")
+        if not self._wait_for_unblock_done():
+            raise RuntimeError("UNBLOCK_TIMEOUT")
+        if self.on_resume:
+            self.on_resume()
+
+    def _build_search_url(self, query: str) -> str:
+        base = LECLERC_STORE_URL
+        if base.endswith(".aspx"):
+            base = base[: -len(".aspx")]
+        base = base.rstrip("/")
+        return f"{base}/recherche.aspx?TexteRecherche={quote_plus(query)}"
 
     def _extract_price(self, text: str) -> tuple[str | None, float | None]:
         import re
@@ -351,112 +364,59 @@ class LeclercRetailer:
                 items.append(item)
         return items
 
-    def _search_with_input(self, query: str) -> bool:
-        selectors = (
-            "input[type='search'],"
-            "input[placeholder*='Recher'],"
-            "input[aria-label*='Recher']"
-        )
-        try:
-            search_input = self.page.locator(selectors).first
-            search_input.wait_for(timeout=2000)
-            search_input.fill(query, timeout=2000)
-            search_input.press("Enter")
-            self.page.wait_for_timeout(2000)
-            return True
-        except Exception:
-            self.logger.debug("Search input failed", exc_info=True)
-            return False
-
-    def _search_with_direct_url(self, query: str):
-        base = LECLERC_STORE_URL.rstrip("/")
-        search_url = f"{base}/recherche.aspx?TexteRecherche={quote_plus(query)}"
-        return self.page.goto(search_url, wait_until="domcontentloaded")
-
     def search(self, query: str, limit: int = 20) -> SearchResult:
         self._ensure_dirs()
         self._start_network_capture()
         self.page.set_default_timeout(DEFAULT_TIMEOUT_MS)
+        block_attempts = 0
+        search_url = self._build_search_url(query)
         try:
-            response = self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
+            self.page.goto(LECLERC_STORE_URL, wait_until="domcontentloaded")
             self._handle_cookie_banner()
             try:
                 self.page.wait_for_load_state("networkidle", timeout=4000)
             except Exception:
                 self.page.wait_for_timeout(1000)
 
-            main_status = response.status if response else None
             html = self.page.content()
             url = self.page.url
-            title = None
-            try:
-                title = self.page.title()
-            except Exception:
-                title = None
-            reason = self._detect_block_reason(html, url, title, main_status)
-            if reason == "DATADOME_VERIFYING":
-                self._wait_for_verification(url)
+            if self._is_datadome_blocked(html, url):
+                block_attempts += 1
+                self.logger.warning("Leclerc blocked detected: url=%s", url)
+                self._capture_artifacts("blocked")
+                if block_attempts > MAX_BLOCK_RETRIES:
+                    raise RuntimeError("BLOCK_RETRY_LIMIT")
+                self._handle_datadome_block(url)
+
+            while True:
+                self.page.goto(search_url, wait_until="domcontentloaded")
+                self._handle_cookie_banner()
                 html = self.page.content()
                 url = self.page.url
-                try:
-                    title = self.page.title()
-                except Exception:
-                    title = None
-                reason = self._detect_block_reason(html, url, title, main_status)
-            if reason:
-                self.logger.warning(
-                    "Leclerc blocked detected: url=%s status=%s reason=%s",
-                    url,
-                    main_status,
-                    reason,
-                )
-                artifacts = self._capture_artifacts("blocked")
-                raise LeclercBlocked(reason, url, artifacts)
-
-            used_input = self._search_with_input(query)
-            if not used_input:
-                response = self._search_with_direct_url(query)
-
-            self._handle_cookie_banner()
-            main_status = response.status if response else None
-            html = self.page.content()
-            url = self.page.url
-            try:
-                title = self.page.title()
-            except Exception:
-                title = None
-            reason = self._detect_block_reason(html, url, title, main_status)
-            if reason == "DATADOME_VERIFYING":
-                self._wait_for_verification(url)
-                html = self.page.content()
-                url = self.page.url
-                try:
-                    title = self.page.title()
-                except Exception:
-                    title = None
-                reason = self._detect_block_reason(html, url, title, main_status)
-            if reason:
-                self.logger.warning(
-                    "Leclerc blocked detected: url=%s status=%s reason=%s",
-                    url,
-                    main_status,
-                    reason,
-                )
-                artifacts = self._capture_artifacts("blocked")
-                raise LeclercBlocked(reason, url, artifacts)
+                if self._is_datadome_blocked(html, url):
+                    block_attempts += 1
+                    self.logger.warning("Leclerc blocked detected: url=%s", url)
+                    self._capture_artifacts("blocked")
+                    if block_attempts > MAX_BLOCK_RETRIES:
+                        raise RuntimeError("BLOCK_RETRY_LIMIT")
+                    self._handle_datadome_block(url)
+                    continue
+                break
 
             parsed = urlparse(LECLERC_STORE_URL)
             base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
             items = self._parse_search_results(limit, base_url)
+            try:
+                page_title = self.page.title()
+            except Exception:
+                page_title = None
             debug = {
                 "final_url": url,
-                "page_title": title,
+                "page_title": page_title,
             }
             if not items:
                 debug.update(self._capture_artifacts("noresults"))
             return SearchResult(items=items, debug=debug)
-        except LeclercBlocked:
-            raise
         except Exception:
             self._capture_artifacts("error")
             self.logger.exception("Leclerc search failed")
@@ -467,7 +427,5 @@ class LeclercRetailer:
 
 __all__ = [
     "LeclercRetailer",
-    "LeclercBlocked",
     "ensure_page",
-    "open_unblock_page",
 ]
