@@ -9,12 +9,13 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .db import (
-    clear_unblock_state,
     create_job,
     fetch_job,
-    get_active_unblock_state,
-    mark_unblock_done,
-    set_unblock_state,
+    get_unblock_state,
+    init_db,
+    reset_unblock_state,
+    set_blocked,
+    set_done,
 )
 
 app = FastAPI()
@@ -57,7 +58,9 @@ def _build_gui_url(request: Request | None) -> str:
     return f"https://{host}:{LECLERC_GUI_PORT}"
 
 
-def _build_unblock_response(state: dict[str, Any] | None, request: Request | None) -> dict[str, Any]:
+def _build_unblock_response(
+    state: dict[str, Any] | None, request: Request | None
+) -> dict[str, Any]:
     gui_url = _build_gui_url(request) if request is not None else _build_gui_url(None)
     if not state:
         return {
@@ -69,16 +72,23 @@ def _build_unblock_response(state: dict[str, Any] | None, request: Request | Non
             "done": False,
             "updated_at": None,
         }
-    blocked = bool(state["active"]) and not bool(state["done"])
+    blocked = bool(state.get("blocked")) and bool(state.get("active"))
+    unblock_url = gui_url if request is not None else state.get("unblock_url") or gui_url
     return {
         "blocked": blocked,
-        "job_id": state["job_id"],
-        "unblock_url": gui_url,
-        "blocked_url": state.get("url"),
+        "job_id": state.get("job_id"),
+        "unblock_url": unblock_url,
+        "blocked_url": state.get("blocked_url"),
         "reason": state.get("reason"),
-        "done": bool(state["done"]),
-        "updated_at": state["updated_at"],
+        "done": bool(state.get("done")),
+        "updated_at": state.get("updated_at"),
     }
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+    reset_unblock_state()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -94,13 +104,13 @@ def index(request: Request):
 
 @app.get("/leclerc/unblock", response_class=HTMLResponse)
 def leclerc_unblock_page(request: Request):
-    state = get_active_unblock_state()
+    state = get_unblock_state()
     return templates.TemplateResponse(
         "unblock.html",
         {
             "request": request,
             "leclerc_gui_url": _build_gui_url(request),
-            "blocked_url": state["url"] if state else None,
+            "blocked_url": state.get("blocked_url") if state else None,
         },
     )
 
@@ -110,7 +120,7 @@ def leclerc_search(payload: dict[str, Any]):
     query = (payload.get("query") or payload.get("q") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
-    clear_unblock_state()
+    reset_unblock_state()
     job_id = create_job("leclerc", query)
     return {"job_id": job_id, "status": "QUEUED"}
 
@@ -124,35 +134,29 @@ def get_job(job_id: int):
 
 
 @app.post("/leclerc/unblock/blocked")
-def leclerc_unblock_blocked(payload: UnblockPayload | None = None):
+def leclerc_unblock_blocked(request: Request, payload: UnblockPayload | None = None):
     payload = payload or UnblockPayload()
-    job_id = payload.job_id
-    state = get_active_unblock_state()
-    if not job_id and state:
-        job_id = state["job_id"]
-    if not job_id:
-        return _build_unblock_response(state, None)
-    url = payload.blocked_url or (state.get("url") if state else None)
-    reason = payload.reason or (state.get("reason") if state else None)
-    set_unblock_state(int(job_id), url, reason, active=True, done=False)
-    return _build_unblock_response(get_active_unblock_state(), None)
+    if not payload.job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    gui_url = _build_gui_url(request)
+    set_blocked(
+        int(payload.job_id),
+        payload.reason,
+        payload.blocked_url,
+        gui_url,
+    )
+    return _build_unblock_response(get_unblock_state(), request)
 
 
 @app.post("/leclerc/unblock/done")
-def leclerc_unblock_done(payload: dict[str, Any] | None = None):
-    payload = payload or {}
-    job_id = payload.get("job_id")
-    state = get_active_unblock_state()
-    if not job_id and state:
-        job_id = state["job_id"]
-    if job_id:
-        mark_unblock_done(int(job_id))
-    return _build_unblock_response(get_active_unblock_state(), None)
+def leclerc_unblock_done(request: Request):
+    set_done()
+    return _build_unblock_response(get_unblock_state(), request)
 
 
 @app.get("/leclerc/unblock/status")
 def leclerc_unblock_status(request: Request):
-    state = get_active_unblock_state()
+    state = get_unblock_state()
     return _build_unblock_response(state, request)
 
 

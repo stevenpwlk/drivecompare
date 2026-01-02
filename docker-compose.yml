@@ -22,11 +22,12 @@ services:
   worker:
     build: ./worker
     init: true
+    network_mode: "service:leclerc-gui"
     env_file:
       - .env
     environment:
       - LECLERC_BACKEND_URL=http://backend:8000
-      - LECLERC_CDP_URL=http://leclerc-gui:9222
+      - LECLERC_CDP_URL=http://127.0.0.1:9222
     volumes:
       - ./data:/data
       - ./logs:/logs
@@ -57,8 +58,10 @@ services:
       - TZ=Europe/Paris
       - >-
         CHROME_CLI=--remote-debugging-port=9222
-        --remote-debugging-address=0.0.0.0
+        --remote-allow-origins=*
+        --user-data-dir=/config/cdp-profile
         --no-sandbox
+        --disable-dev-shm-usage
         http://backend:8000/leclerc/unblock
     security_opt:
       - seccomp=unconfined

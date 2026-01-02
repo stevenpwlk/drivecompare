@@ -40,14 +40,24 @@ def init_db() -> None:
                 result_json TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS unblock_state (
-                job_id INTEGER PRIMARY KEY,
-                url TEXT,
+            CREATE TABLE IF NOT EXISTS leclerc_unblock_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                active INTEGER DEFAULT 0,
+                blocked INTEGER DEFAULT 0,
+                done INTEGER DEFAULT 0,
+                job_id INTEGER,
                 reason TEXT,
-                active INTEGER NOT NULL DEFAULT 0,
-                done INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                blocked_url TEXT,
+                unblock_url TEXT,
+                updated_at TEXT
             );
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO leclerc_unblock_state
+            (id, active, blocked, done, updated_at)
+            VALUES (1, 0, 0, 0, datetime('now'))
             """
         )
 
@@ -124,7 +134,18 @@ def mark_job_succeeded(job_id: int, result: dict[str, Any]) -> None:
 
 def clear_unblock_state(job_id: int) -> None:
     execute(
-        "UPDATE unblock_state SET active = 0, done = 0, updated_at = ? WHERE job_id = ?",
+        """
+        UPDATE leclerc_unblock_state
+        SET active = 0,
+            blocked = 0,
+            done = 0,
+            job_id = NULL,
+            reason = NULL,
+            blocked_url = NULL,
+            unblock_url = NULL,
+            updated_at = ?
+        WHERE id = 1 AND job_id = ?
+        """,
         (utc_now(), job_id),
     )
 
@@ -132,9 +153,9 @@ def clear_unblock_state(job_id: int) -> None:
 def get_unblock_state(job_id: int) -> dict[str, Any] | None:
     return fetch_one(
         """
-        SELECT job_id, url, reason, active, done, updated_at
-        FROM unblock_state
-        WHERE job_id = ?
+        SELECT id, active, blocked, done, job_id, reason, blocked_url, unblock_url, updated_at
+        FROM leclerc_unblock_state
+        WHERE id = 1 AND job_id = ?
         """,
         (job_id,),
     )

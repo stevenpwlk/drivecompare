@@ -40,14 +40,24 @@ def init_db() -> None:
                 result_json TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS unblock_state (
-                job_id INTEGER PRIMARY KEY,
-                url TEXT,
+            CREATE TABLE IF NOT EXISTS leclerc_unblock_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                active INTEGER DEFAULT 0,
+                blocked INTEGER DEFAULT 0,
+                done INTEGER DEFAULT 0,
+                job_id INTEGER,
                 reason TEXT,
-                active INTEGER NOT NULL DEFAULT 0,
-                done INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                blocked_url TEXT,
+                unblock_url TEXT,
+                updated_at TEXT
             );
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO leclerc_unblock_state
+            (id, active, blocked, done, updated_at)
+            VALUES (1, 0, 0, 0, datetime('now'))
             """
         )
 
@@ -111,73 +121,66 @@ def update_job(
     )
 
 
-def set_unblock_state(
-    job_id: int,
-    url: str | None,
-    reason: str | None,
-    *,
-    active: bool,
-    done: bool,
-) -> None:
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE unblock_state SET active = 0 WHERE active = 1 AND job_id != ?",
-            (job_id,),
-        )
-        conn.execute(
-            """
-            INSERT INTO unblock_state (job_id, url, reason, active, done, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                url = excluded.url,
-                reason = excluded.reason,
-                active = excluded.active,
-                done = excluded.done,
-                updated_at = excluded.updated_at
-            """,
-            (
-                job_id,
-                url,
-                reason,
-                1 if active else 0,
-                1 if done else 0,
-                utc_now(),
-            ),
-        )
-
-
-def mark_unblock_done(job_id: int) -> None:
-    execute(
+def get_unblock_state() -> dict[str, Any] | None:
+    return fetch_one(
         """
-        UPDATE unblock_state
-        SET done = 1, active = 0, updated_at = ?
-        WHERE job_id = ?
-        """,
-        (utc_now(), job_id),
+        SELECT id, active, blocked, done, job_id, reason, blocked_url, unblock_url, updated_at
+        FROM leclerc_unblock_state
+        WHERE id = 1
+        """
     )
 
 
-def clear_unblock_state() -> None:
+def set_blocked(
+    job_id: int,
+    reason: str | None,
+    blocked_url: str | None,
+    unblock_url: str | None,
+) -> None:
     execute(
         """
-        UPDATE unblock_state
-        SET active = 0, done = 0, updated_at = ?
-        WHERE active = 1
+        UPDATE leclerc_unblock_state
+        SET active = 1,
+            blocked = 1,
+            done = 0,
+            job_id = ?,
+            reason = ?,
+            blocked_url = ?,
+            unblock_url = ?,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (job_id, reason, blocked_url, unblock_url, utc_now()),
+    )
+
+
+def set_done() -> None:
+    execute(
+        """
+        UPDATE leclerc_unblock_state
+        SET active = 0,
+            blocked = 0,
+            done = 1,
+            updated_at = ?
+        WHERE id = 1
         """,
         (utc_now(),),
     )
 
 
-def get_active_unblock_state() -> dict[str, Any] | None:
-    return fetch_one(
+def reset_unblock_state() -> None:
+    execute(
         """
-        SELECT job_id, url, reason, active, done, updated_at
-        FROM unblock_state
-        WHERE active = 1
-        ORDER BY updated_at DESC
-        LIMIT 1
-        """
+        UPDATE leclerc_unblock_state
+        SET active = 0,
+            blocked = 0,
+            done = 0,
+            job_id = NULL,
+            reason = NULL,
+            blocked_url = NULL,
+            unblock_url = NULL,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (utc_now(),),
     )
-
-
-init_db()

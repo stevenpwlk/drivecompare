@@ -5,8 +5,8 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
 ## Architecture
 
 - **backend (FastAPI)**: API + UI simple (recherche, statut job, actions de déblocage).
-- **worker (Playwright)**: exécute la recherche Leclerc, détecte les blocages, attend le "J'ai terminé".
-- **leclerc-gui**: Chromium avec GUI HTTPS + CDP (port 9222) pour partager la session Leclerc (CDP accessible aux autres conteneurs via `http://leclerc-gui:9222`).
+- **worker (Playwright)**: exécute la recherche Leclerc, détecte les blocages, attend le "J'ai débloqué".
+- **leclerc-gui**: Chromium avec GUI HTTPS + CDP (port 9222) pour partager la session Leclerc (CDP accessible uniquement en localhost du conteneur).
 - **SQLite**: base persistée dans `./data`.
 
 ## Comment ça marche (flow unblock)
@@ -14,11 +14,10 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
 1. L'utilisateur lance une recherche Leclerc.
 2. Le worker démarre la navigation et détecte un éventuel blocage DataDome/captcha.
 3. En cas de blocage:
-   - le job passe en `BLOCKED`,
    - l'UI affiche "Blocage Leclerc: action requise",
-   - le worker ouvre l'URL bloquée dans le navigateur partagé.
+   - l'utilisateur ouvre la GUI et débloque DataDome.
 4. L'utilisateur ouvre `https://<IP>:5801`, résout le captcha/login.
-5. L'utilisateur clique **"J'ai terminé"** dans l'UI.
+5. L'utilisateur clique **"J'ai débloqué"** dans l'UI.
 6. Le worker reprend la navigation, collecte les résultats et passe le job en `SUCCESS`.
 
 ## Prérequis
@@ -35,7 +34,7 @@ newgrp docker
 1) `docker compose down --remove-orphans`
 2) `docker compose up -d --build --remove-orphans`
 3) ouvrir `http://<IP_LXC>:8000`
-4) si bloqué, ouvrir `https://<IP_LXC>:5801` puis cliquer "J’ai terminé"
+4) si bloqué, ouvrir `https://<IP_LXC>:5801` puis cliquer "J’ai débloqué"
 
 ## Endpoints principaux
 
@@ -43,7 +42,7 @@ newgrp docker
 - `GET /jobs/{id}`
 - `GET /leclerc/unblock` (page HTML)
 - `POST /leclerc/unblock/blocked` `{ job_id, blocked_url, reason }`
-- `POST /leclerc/unblock/done` `{ job_id }`
+- `POST /leclerc/unblock/done` (aucun body requis)
 - `GET /leclerc/unblock/status`
 - `GET /health`
 
@@ -57,8 +56,8 @@ newgrp docker
   - `GET http://<IP>:8000/health`
   - `GET http://<IP>:9000/ready`
   - `GET http://<IP>:8000/leclerc/unblock/status`
-  - Depuis un conteneur: `curl http://leclerc-gui:9222/json/version`
-  - Depuis l'hôte: pas besoin d'exposer le port 9222 (le CDP est interne au réseau Docker).
+  - Depuis un conteneur: `curl http://127.0.0.1:9222/json/version` (dans `leclerc-gui`/`worker`)
+  - Depuis l'hôte: pas besoin d'exposer le port 9222 (le CDP reste interne).
 
 ## Diagnostic
 
@@ -92,15 +91,16 @@ Si un port est déjà utilisé sur la machine hôte :
 - `LECLERC_STORE_URL`: URL du magasin Leclerc cible.
 - `LECLERC_STORE_LABEL`: label affiché dans les résultats.
 - `LECLERC_GUI_PORT`: port HTTPS noVNC (par défaut 5801).
-- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://leclerc-gui:9222`).
-- `UNBLOCK_TIMEOUT`: délai d'attente max après "J'ai terminé".
+- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://127.0.0.1:9222`).
+- `UNBLOCK_TIMEOUT`: délai d'attente max après "J'ai débloqué".
+- `PUBLIC_HOST`: host public utilisé pour générer l'URL noVNC (`https://<PUBLIC_HOST>:5801`).
 
 ## Comment débloquer DataDome
 
 1. Lancez une recherche dans l'UI.
-2. Quand le job passe en `BLOCKED`, ouvrez `https://<IP>:5801`.
+2. Quand l'UI signale un blocage, ouvrez `https://<IP>:5801`.
 3. Résolvez le captcha/login dans la GUI Leclerc.
-4. Revenez sur l'UI et cliquez **"J'ai terminé"** (ou utilisez `/leclerc/unblock`).
+4. Revenez sur l'UI et cliquez **"J'ai débloqué"** (ou utilisez `/leclerc/unblock`).
 5. Le worker relance automatiquement la collecte sur le même job.
 
 ## Dépannage rapide

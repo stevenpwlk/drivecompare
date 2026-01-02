@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 import time
-import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -11,21 +10,16 @@ from typing import Any
 from db import (
     clear_unblock_state,
     fetch_next_job,
-    get_unblock_state,
     mark_job_blocked,
     mark_job_failed,
     mark_job_running,
     mark_job_succeeded,
 )
-from retailers.leclerc import LeclercBlocked, LeclercRetailer, ensure_page, open_unblock_page
+from retailers.leclerc import LeclercRetailer, ensure_page
 
 LOG_DIR = os.getenv("LOG_DIR", "/logs")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
-LECLERC_BACKEND_URL = os.getenv("LECLERC_BACKEND_URL", "http://backend:8000")
-LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://leclerc-gui:9222")
-UNBLOCK_POLL_INTERVAL = int(os.getenv("UNBLOCK_POLL_INTERVAL", "3"))
-UNBLOCK_TIMEOUT = int(os.getenv("UNBLOCK_TIMEOUT", "900"))
-MAX_BLOCK_RETRIES = int(os.getenv("MAX_BLOCK_RETRIES", "2"))
+LECLERC_CDP_URL = os.getenv("LECLERC_CDP_URL", "http://127.0.0.1:9222")
 WORKER_HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "9000"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -41,27 +35,33 @@ def _json_response(handler: BaseHTTPRequestHandler, payload: dict[str, Any], sta
 
 
 def check_cdp_health() -> dict[str, Any]:
-    payload: dict[str, Any] = {"ok": False, "message": "CDP unreachable", "version": None}
+    payload: dict[str, Any] = {"ok": False, "error": None, "version": None}
     try:
         with urllib.request.urlopen(f"{LECLERC_CDP_URL}/json/version", timeout=3) as response:
             raw = response.read().decode("utf-8")
         payload["version"] = json.loads(raw) if raw else None
         payload["ok"] = True
-        payload["message"] = "CDP reachable"
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as error:
-        payload["message"] = f"{error.__class__.__name__}: {error}"
+    except Exception as error:
+        payload["error"] = f"{error.__class__.__name__}: {error}"
     return payload
 
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path not in {"/health", "/ready"}:
-            _json_response(self, {"ok": False, "message": "Not found"}, status=404)
-            return
-        payload = {"ok": True}
-        if self.path == "/ready":
-            payload["cdp"] = check_cdp_health()
-        _json_response(self, payload)
+        try:
+            if self.path not in {"/health", "/ready"}:
+                _json_response(self, {"ok": False, "message": "Not found"}, status=404)
+                return
+            payload = {"ok": True}
+            if self.path == "/ready":
+                payload["cdp"] = check_cdp_health()
+            _json_response(self, payload)
+        except Exception as error:
+            _json_response(
+                self,
+                {"ok": False, "error": f"{error.__class__.__name__}: {error}"},
+                status=200,
+            )
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -74,88 +74,31 @@ def start_health_server():
     logging.info("Worker health server on %s", WORKER_HEALTH_PORT)
 
 
-def notify_backend_blocked(job_id: int, url: str | None, reason: str) -> None:
-    payload = json.dumps({"job_id": job_id, "blocked_url": url, "reason": reason}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{LECLERC_BACKEND_URL}/leclerc/unblock/blocked",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=3) as response:
-        response.read()
-
-
-def poll_unblock_status(job_id: int) -> bool:
-    try:
-        with urllib.request.urlopen(
-            f"{LECLERC_BACKEND_URL}/leclerc/unblock/status", timeout=3
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        return payload.get("job_id") == job_id and payload.get("done") is True
-    except Exception:
-        state = get_unblock_state(job_id)
-        return bool(state and state.get("done"))
-
-
-def wait_for_unblock_done(job_id: int) -> bool:
-    logging.info("Waiting for unblock done for job %s", job_id)
-    deadline = time.time() + UNBLOCK_TIMEOUT
-    while time.time() < deadline:
-        if poll_unblock_status(job_id):
-            return True
-        time.sleep(UNBLOCK_POLL_INTERVAL)
-    return False
-
-
 def handle_leclerc_job(job: dict[str, Any]) -> None:
     job_id = int(job["id"])
     query = job["query"]
-    block_attempts = 0
     retailer = None
     page = None
-    while block_attempts <= MAX_BLOCK_RETRIES:
-        try:
-            page = ensure_page()
-            retailer = LeclercRetailer(page, job_id)
-            result = retailer.search(query)
-            mark_job_succeeded(job_id, {"items": result.items, "debug": result.debug})
-            clear_unblock_state(job_id)
-            return
-        except LeclercBlocked as error:
-            block_attempts += 1
-            logging.warning("Leclerc blocked on job %s", job_id)
-            mark_job_blocked(
+    try:
+        page = ensure_page()
+        retailer = LeclercRetailer(
+            page,
+            job_id,
+            on_block=lambda reason, url: mark_job_blocked(
                 job_id,
-                error.reason,
-                result={
-                    "reason": error.reason,
-                    "blocked_url": error.blocked_url,
-                    "artifacts": error.artifacts,
-                },
-            )
-            open_unblock_page(error.blocked_url)
-            try:
-                notify_backend_blocked(job_id, error.blocked_url, error.reason)
-            except Exception:
-                logging.exception("Failed to notify backend of blocked state")
-            if not wait_for_unblock_done(job_id):
-                if retailer:
-                    retailer.capture_artifacts("unblock_timeout")
-                mark_job_failed(job_id, "UNBLOCK_TIMEOUT", {"reason": "timeout"})
-                return
-            logging.info("Unblock done for job %s, resuming scraping", job_id)
-            mark_job_running(job_id)
-            continue
-        except Exception as error:
-            logging.exception("Leclerc search failed")
-            if retailer:
-                retailer.capture_artifacts("worker_error")
-            mark_job_failed(job_id, str(error))
-            return
-    if retailer:
-        retailer.capture_artifacts("block_retry_limit")
-    mark_job_failed(job_id, "BLOCK_RETRY_LIMIT")
+                reason,
+                result={"reason": reason, "blocked_url": url},
+            ),
+            on_resume=lambda: mark_job_running(job_id),
+        )
+        result = retailer.search(query)
+        mark_job_succeeded(job_id, {"items": result.items, "debug": result.debug})
+        clear_unblock_state(job_id)
+    except Exception as error:
+        logging.exception("Leclerc search failed")
+        if retailer:
+            retailer.capture_artifacts("worker_error")
+        mark_job_failed(job_id, str(error))
 
 
 def handle_job(job: dict[str, Any]) -> None:
