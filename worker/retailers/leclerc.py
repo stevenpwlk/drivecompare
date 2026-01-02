@@ -39,11 +39,26 @@ class SharedLeclercBrowser:
     def _ensure_browser(self):
         if self._browser and self._browser.is_connected():
             return self._browser
-        playwright = self._ensure_playwright()
-        self._browser = playwright.chromium.connect_over_cdp(self.cdp_url)
+        self._browser = self._connect_over_cdp()
         self._context = None
         self._page = None
         return self._browser
+
+    def _connect_over_cdp(self):
+        last_error = None
+        for attempt in range(1, 11):
+            try:
+                playwright = self._ensure_playwright()
+                return playwright.chromium.connect_over_cdp(self.cdp_url)
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    "CDP connect attempt %s/10 failed (%s). Retrying...",
+                    attempt,
+                    exc,
+                )
+                time.sleep(0.5 + 0.25 * (attempt - 1))
+        raise last_error
 
     def _ensure_context(self):
         browser = self._ensure_browser()
@@ -353,6 +368,11 @@ class LeclercRetailer:
             self.logger.debug("Search input failed", exc_info=True)
             return False
 
+    def _search_with_direct_url(self, query: str):
+        base = LECLERC_STORE_URL.rstrip("/")
+        search_url = f"{base}/recherche.aspx?TexteRecherche={quote_plus(query)}"
+        return self.page.goto(search_url, wait_until="domcontentloaded")
+
     def search(self, query: str, limit: int = 20) -> SearchResult:
         self._ensure_dirs()
         self._start_network_capture()
@@ -395,10 +415,7 @@ class LeclercRetailer:
 
             used_input = self._search_with_input(query)
             if not used_input:
-                parsed = urlparse(LECLERC_STORE_URL)
-                base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
-                search_url = f"{base}/recherche.aspx?Texte={quote_plus(query)}"
-                response = self.page.goto(search_url, wait_until="domcontentloaded")
+                response = self._search_with_direct_url(query)
 
             self._handle_cookie_banner()
             main_status = response.status if response else None

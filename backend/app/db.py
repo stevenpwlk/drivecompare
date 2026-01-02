@@ -150,7 +150,7 @@ def mark_unblock_done(job_id: int) -> None:
     execute(
         """
         UPDATE unblock_state
-        SET done = 1, updated_at = ?
+        SET done = 1, active = 0, updated_at = ?
         WHERE job_id = ?
         """,
         (utc_now(), job_id),

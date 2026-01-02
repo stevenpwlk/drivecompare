@@ -78,6 +78,7 @@ def _build_unblock_response(state: dict[str, Any] | None, request: Request | Non
         "updated_at": state["updated_at"],
     }
 
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(
@@ -135,9 +136,9 @@ def leclerc_unblock_blocked(payload: UnblockPayload | None = None):
 
 
 @app.post("/leclerc/unblock/done")
-def leclerc_unblock_done(payload: UnblockPayload | None = None):
-    payload = payload or UnblockPayload()
-    job_id = payload.job_id
+def leclerc_unblock_done(payload: dict[str, Any] | None = None):
+    payload = payload or {}
+    job_id = payload.get("job_id")
     state = get_active_unblock_state()
     if not job_id and state:
         job_id = state["job_id"]
