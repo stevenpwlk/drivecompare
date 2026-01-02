@@ -35,7 +35,6 @@ def wait_for_enter(timeout_s: int | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap session Leclerc")
-    parser.add_argument("--account", default="bot", help="Nom du compte (bot par défaut)")
     parser.add_argument(
         "--timeout",
         type=int,
@@ -51,7 +50,7 @@ def main() -> None:
     args = parser.parse_args()
 
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    storage_path = SESSIONS_DIR / f"leclerc_{args.account}.json"
+    storage_path = SESSIONS_DIR / "leclerc.json"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, slow_mo=args.slow_mo)

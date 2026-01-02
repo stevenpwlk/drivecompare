@@ -6,7 +6,7 @@ DriveCompare est une application LAN pour lancer une recherche produit Leclerc v
 
 - **backend (FastAPI)**: API + UI simple (recherche, statut job, actions de déblocage).
 - **worker (Playwright)**: exécute la recherche Leclerc, détecte les blocages, attend le "J'ai terminé".
-- **leclerc-gui**: Chromium avec GUI noVNC HTTPS + CDP (port 9222). Le worker pilote **le même profil** (`/sessions/leclerc-profile`).
+- **leclerc-gui**: Chromium avec GUI HTTPS + CDP (port 9222) pour partager la session Leclerc.
 - **SQLite**: base persistée dans `./data`.
 
 ## Comment ça marche (flow unblock)
@@ -30,35 +30,26 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-## Install / run
+## Démarrage
 
-```bash
-cp .env.example .env
-
-docker compose run --rm backend python backend/init_db.py
-
-docker compose up -d --build
-```
-
-UI: `http://<IP>:8000`
-
-GUI Leclerc (HTTPS uniquement): `https://<IP>:5801`
-
-Sessions partagées: profil Chromium persisté dans `./sessions` (monté sur `/sessions/leclerc-profile`).
+1) `docker compose down --remove-orphans`
+2) `docker compose up -d --build --remove-orphans`
+3) ouvrir `http://<IP_LXC>:8000`
+4) si bloqué, ouvrir `https://<IP_LXC>:5801` puis cliquer "J’ai terminé"
 
 ## Endpoints principaux
 
 - `POST /jobs/leclerc-search` `{ query: "coca" }`
 - `GET /jobs/{id}`
 - `GET /leclerc/unblock` (page HTML)
-- `POST /leclerc/unblock/blocked` `{ job_id, url, reason }`
+- `POST /leclerc/unblock/blocked` `{ job_id, blocked_url, reason }`
 - `POST /leclerc/unblock/done` `{ job_id }`
 - `GET /leclerc/unblock/status`
 - `GET /health`
 
 ## Debug / Observabilité
 
-- Logs worker: `./logs/leclerc`
+- Logs worker: `./logs/leclerc/<job_id>`
   - `leclerc_blocked_*.png/html` lors de blocage
   - `leclerc_noresults_*.png/html` si aucune carte produit
   - `leclerc_*_network.json` résumé réseau par échec
@@ -76,10 +67,14 @@ Sessions partagées: profil Chromium persisté dans `./sessions` (monté sur `/s
 ./tools/unblock_status.sh
 ```
 
-## Smoke test
+## Plan de test (5 commandes max)
 
 ```bash
-./tools/smoke_test.sh
+./tools/status_services.sh
+./tools/gui_https.sh
+./tools/debug_cdp.sh
+curl -sX POST http://localhost:8000/jobs/leclerc-search -H "Content-Type: application/json" -d '{"query":"coca"}'
+./tools/unblock_status.sh
 ```
 
 ## Résolution port conflict
@@ -87,7 +82,7 @@ Sessions partagées: profil Chromium persisté dans `./sessions` (monté sur `/s
 Si un port est déjà utilisé sur la machine hôte :
 
 1. Stoppez les services en conflit.
-2. Ou modifiez le mapping dans `docker-compose.yml` (ex: `5801:5801` ➜ `5802:5801`).
+2. Ou modifiez le mapping dans `docker-compose.yml` (ex: `5801:3001` ➜ `5802:3001`).
 3. Mettez à jour vos URL d'accès en conséquence.
 
 ## Configuration (extraits)
@@ -95,7 +90,7 @@ Si un port est déjà utilisé sur la machine hôte :
 - `LECLERC_STORE_URL`: URL du magasin Leclerc cible.
 - `LECLERC_STORE_LABEL`: label affiché dans les résultats.
 - `LECLERC_GUI_PORT`: port HTTPS noVNC (par défaut 5801).
-- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://leclerc-gui:9222`).
+- `LECLERC_CDP_URL`: URL CDP interne (par défaut `http://127.0.0.1:9222`).
 - `UNBLOCK_TIMEOUT`: délai d'attente max après "J'ai terminé".
 
 ## Comment débloquer DataDome

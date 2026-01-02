@@ -21,13 +21,12 @@ services:
 
   worker:
     build: ./worker
-    ipc: host
     init: true
     env_file:
       - .env
     environment:
       - LECLERC_BACKEND_URL=http://backend:8000
-      - LECLERC_CDP_URL=http://leclerc-gui:9222
+      - LECLERC_CDP_URL=http://127.0.0.1:9222
     volumes:
       - ./data:/data
       - ./logs:/logs
@@ -37,6 +36,7 @@ services:
         condition: service_started
       leclerc-gui:
         condition: service_healthy
+    network_mode: "service:leclerc-gui"
     healthcheck:
       test:
         [
@@ -48,20 +48,18 @@ services:
       retries: 5
 
   leclerc-gui:
-    build: ./browser
+    image: lscr.io/linuxserver/chromium:latest
     ports:
-      - "5801:5801"
-    expose:
-      - "9222"
+      - "5801:3001"
     volumes:
-      - ./sessions:/sessions
+      - ./sessions/leclerc:/config
     environment:
       - TZ=Europe/Paris
-      - LECLERC_START_URL=https://www.e.leclerc/
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 http://backend:8000/leclerc/unblock
     shm_size: "1gb"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:5801/ > /dev/null"]
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:3001/ > /dev/null"]
       interval: 5s
       timeout: 3s
       retries: 10

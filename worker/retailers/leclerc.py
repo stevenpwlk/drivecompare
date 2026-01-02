@@ -116,10 +116,10 @@ class SearchResult:
 
 
 class LeclercRetailer:
-    def __init__(self, page: Page) -> None:
+    def __init__(self, page: Page, job_id: int) -> None:
         self.page = page
         self.logger = logging.getLogger(__name__)
-        self.log_dir = LOG_DIR / "leclerc"
+        self.log_dir = LOG_DIR / "leclerc" / str(job_id)
         self._network_entries: list[dict[str, Any]] = []
         self._network_handlers: dict[str, Any] = {}
 
@@ -221,6 +221,9 @@ class LeclercRetailer:
             payload["url"] = None
         payload["network"] = str(network_path)
         return payload
+
+    def capture_artifacts(self, label: str) -> dict[str, str]:
+        return self._capture_artifacts(label)
 
     def _handle_cookie_banner(self) -> None:
         buttons = [

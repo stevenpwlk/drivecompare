@@ -1,6 +1,5 @@
 import os
 import sqlite3
-from datetime import datetime, timezone
 
 DB_PATH = os.getenv("DB_PATH", "/data/drivecompare.db")
 
@@ -24,11 +23,6 @@ CREATE TABLE IF NOT EXISTS unblock_state (
     done INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS key_value (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
 """
 
 
@@ -37,14 +31,6 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO key_value (key, value)
-        VALUES ('db_initialized_at', ?)
-        """,
-        (now,),
-    )
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")

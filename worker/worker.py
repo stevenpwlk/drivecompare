@@ -75,7 +75,7 @@ def start_health_server():
 
 
 def notify_backend_blocked(job_id: int, url: str | None, reason: str) -> None:
-    payload = json.dumps({"job_id": job_id, "url": url, "reason": reason}).encode("utf-8")
+    payload = json.dumps({"job_id": job_id, "blocked_url": url, "reason": reason}).encode("utf-8")
     request = urllib.request.Request(
         f"{LECLERC_BACKEND_URL}/leclerc/unblock/blocked",
         data=payload,
@@ -112,10 +112,12 @@ def handle_leclerc_job(job: dict[str, Any]) -> None:
     job_id = int(job["id"])
     query = job["query"]
     block_attempts = 0
+    retailer = None
+    page = None
     while block_attempts <= MAX_BLOCK_RETRIES:
         try:
             page = ensure_page()
-            retailer = LeclercRetailer(page)
+            retailer = LeclercRetailer(page, job_id)
             result = retailer.search(query)
             mark_job_succeeded(job_id, {"items": result.items, "debug": result.debug})
             clear_unblock_state(job_id)
@@ -138,14 +140,20 @@ def handle_leclerc_job(job: dict[str, Any]) -> None:
             except Exception:
                 logging.exception("Failed to notify backend of blocked state")
             if not wait_for_unblock_done(job_id):
+                if retailer:
+                    retailer.capture_artifacts("unblock_timeout")
                 mark_job_failed(job_id, "UNBLOCK_TIMEOUT", {"reason": "timeout"})
                 return
             mark_job_running(job_id)
             continue
         except Exception as error:
             logging.exception("Leclerc search failed")
+            if retailer:
+                retailer.capture_artifacts("worker_error")
             mark_job_failed(job_id, str(error))
             return
+    if retailer:
+        retailer.capture_artifacts("block_retry_limit")
     mark_job_failed(job_id, "BLOCK_RETRY_LIMIT")
 
 

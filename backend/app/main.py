@@ -1,5 +1,6 @@
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -19,6 +20,33 @@ app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
 templates = Jinja2Templates(directory="backend/app/templates")
 
 LECLERC_GUI_PORT = int(os.getenv("LECLERC_GUI_PORT", "5801"))
+PUBLIC_HOST = os.getenv("PUBLIC_HOST")
+
+
+def _normalize_host(host: str | None) -> str | None:
+    if not host:
+        return None
+    if ":" in host:
+        return host.split(":")[0]
+    return host
+
+
+def _build_gui_url(request: Request | None) -> str:
+    host = None
+    if PUBLIC_HOST:
+        parsed = urlparse(PUBLIC_HOST)
+        if parsed.scheme and parsed.hostname:
+            host = parsed.hostname
+        else:
+            host = PUBLIC_HOST
+    if not host and request is not None:
+        host = (
+            request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or request.url.hostname
+        )
+    host = _normalize_host(host) or "localhost"
+    return f"https://{host}:{LECLERC_GUI_PORT}"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -27,17 +55,20 @@ def index(request: Request):
         "index.html",
         {
             "request": request,
-            "leclerc_gui_port": LECLERC_GUI_PORT,
+            "leclerc_gui_url": _build_gui_url(request),
         },
     )
 
+
 @app.get("/leclerc/unblock", response_class=HTMLResponse)
 def leclerc_unblock_page(request: Request):
+    state = get_active_unblock_state()
     return templates.TemplateResponse(
         "unblock.html",
         {
             "request": request,
-            "leclerc_gui_port": LECLERC_GUI_PORT,
+            "leclerc_gui_url": _build_gui_url(request),
+            "blocked_url": state["url"] if state else None,
         },
     )
 
@@ -80,13 +111,14 @@ def leclerc_unblock_done(payload: dict[str, Any]):
 
 
 @app.get("/leclerc/unblock/status")
-def leclerc_unblock_status():
+def leclerc_unblock_status(request: Request):
     state = get_active_unblock_state()
+    gui_url = _build_gui_url(request)
     if not state:
         return {
             "blocked": False,
             "job_id": None,
-            "unblock_url": None,
+            "unblock_url": gui_url,
             "reason": None,
             "done": False,
             "updated_at": None,
@@ -94,7 +126,7 @@ def leclerc_unblock_status():
     return {
         "blocked": bool(state["active"]),
         "job_id": state["job_id"],
-        "unblock_url": state["url"],
+        "unblock_url": gui_url,
         "reason": state["reason"],
         "done": bool(state["done"]),
         "updated_at": state["updated_at"],
