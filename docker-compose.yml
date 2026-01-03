@@ -5,56 +5,64 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # IMPORTANT: le worker est dans le netns de leclerc-gui, donc reachable via leclerc-gui:9000
+      LECLERC_WORKER_URL: "http://leclerc-gui:9000"
+      WORKER_URL: "http://leclerc-gui:9000"
     volumes:
       - ./data:/data
       - ./logs:/logs
-    command:
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 10
+      start_period: 10s
 
   leclerc-gui:
     image: lscr.io/linuxserver/chromium:latest
-    shm_size: "1gb"
+    shm_size: "2gb"
     environment:
-      PUID: 911
-      PGID: 911
-      TZ: Europe/Paris
-      # DÉMARRE chromium avec le port CDP (devtools) ouvert
-      CHROME_CLI: "--remote-debugging-port=9222 --remote-allow-origins=* --no-first-run --no-default-browser-check about:blank"
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - CHROME_CLI=--remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-dev-shm-usage about:blank
+      - RESTART_APP=true
+    volumes:
+      - ./sessions/leclerc:/config
     ports:
       - "5800:3000"
       - "5801:3001"
-      # optionnel: accès depuis l'hôte (pas nécessaire pour le worker)
       - "127.0.0.1:9223:9223"
-    volumes:
-      - ./sessions/leclerc:/config
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+
+  leclerc-cdp:
+    image: alpine/socat:latest
+    depends_on:
+      - leclerc-gui
+    network_mode: "service:leclerc-gui"
+    command: ["-T","60","TCP-LISTEN:9223,bind=0.0.0.0,reuseaddr,fork","TCP:127.0.0.1:9222"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9222/json/version >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 60s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9223/json/version >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
+    restart: unless-stopped
 
   worker:
     build: ./worker
     init: true
-    network_mode: "service:leclerc-gui"
+    network_mode: "service:leclerc-gui"   # <<< IMPORTANT
     env_file:
       - .env
     environment:
       LECLERC_BACKEND_URL: http://backend:8000
-      LECLERC_CDP_URL: "http://leclerc-gui:9223"
+      # IMPORTANT: dans le netns partagé, 127.0.0.1:9222 est bien Chromium
+      LECLERC_CDP_URL: "http://127.0.0.1:9222"
       WORKER_HEALTH_PORT: "9000"
     volumes:
       - ./data:/data
@@ -63,33 +71,10 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-      leclerc-gui:
+      leclerc-cdp:
         condition: service_healthy
     healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/ready', timeout=3).read()"
-      interval: 10s
-      timeout: 3s
-      retries: 10
-
-  leclerc-cdp:
-    image: alpine/socat:latest
-    network_mode: "service:leclerc-gui"
-    depends_on:
-      leclerc-gui:
-        condition: service_healthy
-    restart: unless-stopped
-    entrypoint: ["socat"]
-    command:
-      - "-T"
-      - "60"
-      - "TCP-LISTEN:9223,fork,reuseaddr"
-      - "TCP:127.0.0.1:9222"
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - socat -T 2 -u /dev/null TCP:127.0.0.1:9223
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/ready', timeout=3).read()\""]
       interval: 10s
       timeout: 3s
       retries: 10
