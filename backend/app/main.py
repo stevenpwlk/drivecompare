@@ -8,6 +8,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .db import init_db, get_unblock_state, reset_unblock_state, utcnow_iso
 from .leclerc_search import make_search_url
 
+import httpx
+from pydantic import BaseModel, Field
+
 LECLERC_STORE_URL = os.getenv("LECLERC_STORE_URL", "")
 LECLERC_STORE_LABEL = os.getenv("LECLERC_STORE_LABEL", "Leclerc")
 LECLERC_WORKER_URL = os.getenv("LECLERC_WORKER_URL", "http://worker:9000")
@@ -99,6 +102,23 @@ def home():
     )
 
 
+
+class LeclercLoginRequest(BaseModel):
+    email: str = Field(..., description="Email du compte E.Leclerc")
+    password: str = Field(..., description="Mot de passe du compte E.Leclerc")
+    auth_url: str | None = Field(
+        None,
+        description="URL complète de la page d'authentification. Si absent, le worker utilisera son URL par défaut.",
+    )
+    verify_url: str | None = Field(
+        None,
+        description="URL optionnelle à ouvrir après login pour vérifier que la session est bien authentifiée (ex: mes-commandes).",
+    )
+    save_storage_state: bool = Field(
+        True,
+        description="Sauvegarde un storage_state Playwright dans /sessions/leclerc/storage_state.json pour debug/reprise.",
+    )
+
 @app.get("/api/leclerc/search")
 def api_leclerc_search(q: str, limit: int = 20):
     if not q:
@@ -119,6 +139,26 @@ def api_leclerc_search(q: str, limit: int = 20):
             {"ok": False, "message": f"Worker unavailable: {error}"},
             status_code=503,
         )
+
+
+
+@app.post("/api/leclerc/login")
+async def api_leclerc_login(payload: LeclercLoginRequest):
+    """Déclenche un login E.Leclerc via le worker Playwright (CDP)."""
+    worker_url = os.getenv("LECLERC_WORKER_URL", "http://worker:9000").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(f"{worker_url}/leclerc/login", json=payload.model_dump())
+        if resp.status_code != 200:
+            # ne jamais renvoyer le mot de passe
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = {"error": resp.text[:500]}
+            raise HTTPException(status_code=503, detail={"error": "worker_error", "detail": detail})
+        return resp.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail={"error": "worker_unreachable", "detail": str(e)})
 
 
 @app.get("/leclerc", response_class=HTMLResponse, include_in_schema=False)

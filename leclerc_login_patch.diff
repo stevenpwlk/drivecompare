@@ -1,0 +1,271 @@
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -99,6 +99,23 @@
+     )
+ 
+ 
++
++class LeclercLoginRequest(BaseModel):
++    email: str = Field(..., description="Email du compte E.Leclerc")
++    password: str = Field(..., description="Mot de passe du compte E.Leclerc")
++    auth_url: str | None = Field(
++        None,
++        description="URL complète de la page d'authentification. Si absent, le worker utilisera son URL par défaut.",
++    )
++    verify_url: str | None = Field(
++        None,
++        description="URL optionnelle à ouvrir après login pour vérifier que la session est bien authentifiée (ex: mes-commandes).",
++    )
++    save_storage_state: bool = Field(
++        True,
++        description="Sauvegarde un storage_state Playwright dans /sessions/leclerc/storage_state.json pour debug/reprise.",
++    )
++
+ @app.get("/api/leclerc/search")
+ def api_leclerc_search(q: str, limit: int = 20):
+     if not q:
+@@ -119,6 +136,26 @@
+             {"ok": False, "message": f"Worker unavailable: {error}"},
+             status_code=503,
+         )
++
++
++
++@app.post("/api/leclerc/login")
++async def api_leclerc_login(payload: LeclercLoginRequest):
++    """Déclenche un login E.Leclerc via le worker Playwright (CDP)."""
++    worker_url = os.getenv("LECLERC_WORKER_URL", "http://worker:9000").rstrip("/")
++    try:
++        async with httpx.AsyncClient(timeout=90.0) as client:
++            resp = await client.post(f"{worker_url}/leclerc/login", json=payload.model_dump())
++        if resp.status_code != 200:
++            # ne jamais renvoyer le mot de passe
++            try:
++                detail = resp.json()
++            except Exception:
++                detail = {"error": resp.text[:500]}
++            raise HTTPException(status_code=503, detail={"error": "worker_error", "detail": detail})
++        return resp.json()
++    except httpx.RequestError as e:
++        raise HTTPException(status_code=503, detail={"error": "worker_unreachable", "detail": str(e)})
+ 
+ 
+ @app.get("/leclerc", response_class=HTMLResponse, include_in_schema=False)
+
+--- a/worker/worker.py
++++ b/worker/worker.py
+@@ -183,7 +183,59 @@
+                 status=200,
+             )
+ 
+-    def log_message(self, format: str, *args: Any) -> None:
++    
++
++    def do_POST(self):
++        parsed = urllib.parse.urlparse(self.path)
++        path = parsed.path
++
++        if path == "/leclerc/login":
++            try:
++                length = int(self.headers.get("Content-Length", "0"))
++                raw = self.rfile.read(length) if length > 0 else b"{}"
++                try:
++                    payload = json.loads(raw.decode("utf-8"))
++                except Exception:
++                    payload = {}
++
++                email = (payload.get("email") or "").strip()
++                password = payload.get("password") or ""
++                auth_url = payload.get("auth_url") or os.getenv("LECLERC_AUTH_URL") or ""
++                verify_url = payload.get("verify_url") or os.getenv("LECLERC_VERIFY_URL") or ""
++                save_state = bool(payload.get("save_storage_state", True))
++
++                if not email or not password:
++                    self._json(400, {"ok": False, "error": "missing_credentials"})
++                    return
++
++                with sync_playwright() as p:
++                    browser = p.chromium.connect_over_cdp(LECLERC_CDP_URL, timeout=DEFAULT_TIMEOUT_MS)
++                    try:
++                        context = browser.contexts[0] if browser.contexts else browser.new_context()
++                        page = context.new_page()
++
++                        result = LeclercRetailer.get_instance().login(
++                            page=page,
++                            email=email,
++                            password=password,
++                            auth_url=auth_url or None,
++                            verify_url=verify_url or None,
++                            save_storage_state=save_state,
++                        )
++                        self._json(200, result)
++                    finally:
++                        try:
++                            browser.close()
++                        except Exception:
++                            pass
++            except Exception as e:
++                self._json(500, {"ok": False, "error": "login_failed", "detail": str(e)})
++            return
++
++        self._json(404, {"ok": False, "error": "not_found", "path": path})
++        return
++
++def log_message(self, format: str, *args: Any) -> None:
+         return
+ 
+     def _handle_leclerc_search(self, parsed: urllib.parse.ParseResult) -> None:
+
+--- a/worker/retailers/leclerc.py
++++ b/worker/retailers/leclerc.py
+@@ -364,6 +364,150 @@
+                 items.append(item)
+         return items
+ 
++
++    def login(
++        self,
++        page: Page,
++        email: str,
++        password: str,
++        auth_url: str | None = None,
++        verify_url: str | None = None,
++        save_storage_state: bool = True,
++    ) -> dict:
++        """Login sur l'espace client E.Leclerc et persiste la session via le profil Chromium partagé.
++
++        Note: on n'essaie PAS de contourner un éventuel challenge anti-bot (DataDome/CAPTCHA).
++        Si un challenge apparaît, on renvoie un statut "blocked" et on demande une validation manuelle via l'UI (port 5800).
++        """
++
++        auth_url = auth_url or os.getenv("LECLERC_AUTH_URL") or ""
++        if not auth_url:
++            return {"ok": False, "error": "missing_auth_url"}
++
++        page.goto(auth_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
++        self._accept_cookie_banner(page)
++
++        if self._is_datadome_blocked(page):
++            self._handle_datadome_block(page, "login")
++            return {"ok": False, "error": "blocked", "blocked": True, "url": page.url}
++
++        def _fill_first(selectors: list[str], value: str) -> bool:
++            for sel in selectors:
++                try:
++                    loc = page.locator(sel).first
++                    if loc.count() and loc.is_visible():
++                        loc.click(timeout=2000)
++                        loc.fill(value, timeout=5000)
++                        return True
++                except Exception:
++                    continue
++            return False
++
++        email_ok = _fill_first(
++            [
++                "input[type='email']",
++                "input[name*='mail' i]",
++                "input[id*='mail' i]",
++                "input[name*='login' i]",
++                "input[id*='login' i]",
++                "input[name*='ident' i]",
++                "input[id*='ident' i]",
++            ],
++            email,
++        )
++        page.wait_for_timeout(250)
++
++        pwd_ok = _fill_first(
++            [
++                "input[type='password']",
++                "input[name*='pass' i]",
++                "input[id*='pass' i]",
++            ],
++            password,
++        )
++        page.wait_for_timeout(250)
++
++        if not email_ok or not pwd_ok:
++            self._save_debug_artifacts(page, "login_missing_fields")
++            return {
++                "ok": False,
++                "error": "login_form_not_found",
++                "url": page.url,
++                "email_field": email_ok,
++                "password_field": pwd_ok,
++            }
++
++        submitted = False
++        for sel in [
++            "button[type='submit']",
++            "input[type='submit']",
++            "button:has-text('Se connecter')",
++            "button:has-text('Connexion')",
++            "button:has-text('Valider')",
++        ]:
++            try:
++                loc = page.locator(sel).first
++                if loc.count() and loc.is_visible():
++                    loc.click(timeout=5000)
++                    submitted = True
++                    break
++            except Exception:
++                continue
++
++        if not submitted:
++            self._save_debug_artifacts(page, "login_no_submit")
++            return {"ok": False, "error": "login_submit_not_found", "url": page.url}
++
++        try:
++            page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
++        except Exception:
++            pass
++
++        if self._is_datadome_blocked(page):
++            self._handle_datadome_block(page, "login_after_submit")
++            return {"ok": False, "error": "blocked", "blocked": True, "url": page.url}
++
++        logged_in = True
++        if verify_url:
++            try:
++                page.goto(verify_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
++                self._accept_cookie_banner(page)
++                if "authentification.aspx" in page.url.lower():
++                    logged_in = False
++            except Exception:
++                logged_in = False
++        else:
++            if "authentification.aspx" in page.url.lower():
++                logged_in = False
++
++        if save_storage_state:
++            try:
++                state_path = "/sessions/leclerc/storage_state.json"
++                os.makedirs(os.path.dirname(state_path), exist_ok=True)
++                page.context.storage_state(path=state_path)
++            except Exception:
++                pass
++
++        return {
++            "ok": True,
++            "logged_in": logged_in,
++            "url": page.url,
++            "title": page.title(),
++        }
++
++    def _save_debug_artifacts(self, page: Page, tag: str) -> None:
++        """Sauvegarde screenshot + html dans /logs pour faciliter le debug."""
++        try:
++            ts = int(time.time())
++            base = f"/logs/leclerc_{tag}_{ts}"
++            page.screenshot(path=f"{base}.png", full_page=True)
++            html = page.content()
++            with open(f"{base}.html", "w", encoding="utf-8") as f:
++                f.write(html)
++        except Exception:
++            pass
++
++
+     def search(self, query: str, limit: int = 20) -> SearchResult:
+         self._ensure_dirs()
+         self._start_network_capture()

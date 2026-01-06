@@ -6,6 +6,7 @@ services:
     env_file:
       - .env
     environment:
+      LOG_DIR: /logs
       # IMPORTANT: le worker est dans le netns de leclerc-gui, donc reachable via leclerc-gui:9000
       LECLERC_WORKER_URL: "http://leclerc-gui:9000"
       WORKER_URL: "http://leclerc-gui:9000"
@@ -60,6 +61,7 @@ services:
     env_file:
       - .env
     environment:
+      LOG_DIR: /logs
       LECLERC_BACKEND_URL: http://backend:8000
       # IMPORTANT: dans le netns partagé, 127.0.0.1:9222 est bien Chromium
       LECLERC_CDP_URL: "http://127.0.0.1:9222"
