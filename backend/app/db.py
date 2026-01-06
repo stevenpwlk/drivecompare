@@ -137,7 +137,7 @@ def get_unblock_state() -> dict[str, Any] | None:
 
 
 def set_blocked(
-    job_id: int,
+    job_id: int | None,
     reason: str | None,
     blocked_url: str | None,
     unblock_url: str | None,

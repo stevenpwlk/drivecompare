@@ -5,7 +5,7 @@ import urllib.parse
 import urllib.request
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from .db import init_db, get_unblock_state, reset_unblock_state, utcnow_iso
+from .db import init_db, get_unblock_state, reset_unblock_state, set_blocked, get_conn, utcnow_iso
 from .leclerc_search import make_search_url
 
 import httpx
@@ -14,8 +14,34 @@ from pydantic import BaseModel, Field
 LECLERC_STORE_URL = os.getenv("LECLERC_STORE_URL", "")
 LECLERC_STORE_LABEL = os.getenv("LECLERC_STORE_LABEL", "Leclerc")
 LECLERC_WORKER_URL = os.getenv("LECLERC_WORKER_URL", "http://worker:9000")
+WORKER_TIMEOUT = float(os.getenv("WORKER_TIMEOUT", "180"))
 
 app = FastAPI(title="DriveCompare API (POC)")
+
+
+def _normalize_worker_challenge(payload: dict) -> dict:
+    """Standardise the worker's challenge statuses for the backend/UI."""
+    msg = payload.get("message")
+    stage = (payload.get("stage") or "") if isinstance(payload.get("stage"), str) else ""
+    if msg == "captcha_required" and stage and "2fa" in stage.lower():
+        payload = dict(payload)
+        payload["message"] = "2fa_required"
+    return payload
+
+
+def _maybe_update_unblock_state(payload: dict) -> None:
+    msg = payload.get("message")
+    if msg in ("captcha_required", "2fa_required"):
+        set_blocked(
+            payload.get("job_id"),
+            payload.get("stage") or msg,
+            payload.get("blocked_url"),
+            payload.get("unblock_url"),
+        )
+    elif payload.get("ok") is True:
+        state = get_unblock_state() or {}
+        if state.get("active"):
+            reset_unblock_state()
 
 @app.on_event("startup")
 def _startup():
@@ -66,6 +92,15 @@ def leclerc_unblock_page():
 </html>"""
     return HTMLResponse(html)
 
+# Backward-compatible aliases for older tooling/scripts
+@app.get("/leclerc/unblock/status")
+def leclerc_unblock_status_alias():
+    return get_unblock_state()
+
+@app.post("/leclerc/unblock/done")
+def leclerc_unblock_done_alias():
+    return reset_unblock_state()
+
 @app.get("/api/unblock/state")
 def api_state():
     return get_unblock_state()
@@ -77,10 +112,11 @@ def api_reset():
 @app.post("/api/unblock/active")
 def api_set_active(active: bool = True):
     # endpoint pratique pour tests
-    from .db import connect
-    with connect() as con:
-        con.execute("UPDATE leclerc_unblock_state SET active=?, updated_at=? WHERE id=1", (1 if active else 0, utcnow_iso()))
-        con.commit()
+    with get_conn() as con:
+        con.execute(
+            "UPDATE leclerc_unblock_state SET active=?, updated_at=? WHERE id=1",
+            (1 if active else 0, utcnow_iso()),
+        )
     return get_unblock_state()
 
 @app.get("/", include_in_schema=False)
@@ -119,6 +155,17 @@ class LeclercLoginRequest(BaseModel):
         description="Sauvegarde un storage_state Playwright dans /sessions/leclerc/storage_state.json pour debug/reprise.",
     )
 
+
+
+@app.get("/api/worker/ready")
+def api_worker_ready():
+    url = f"{LECLERC_WORKER_URL}/ready"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return {"ok": True, "status": getattr(response, "status", 200)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/api/leclerc/search")
 def api_leclerc_search(q: str, limit: int = 20):
     if not q:
@@ -126,13 +173,17 @@ def api_leclerc_search(q: str, limit: int = 20):
     params = urllib.parse.urlencode({"q": q, "limit": limit})
     url = f"{LECLERC_WORKER_URL}/leclerc/search?{params}"
     try:
-        with urllib.request.urlopen(url, timeout=45) as response:
+        with urllib.request.urlopen(url, timeout=WORKER_TIMEOUT) as response:
             raw = response.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
+            payload = _normalize_worker_challenge(payload)
+            _maybe_update_unblock_state(payload)
             return JSONResponse(payload, status_code=response.status)
     except urllib.error.HTTPError as error:
         raw = error.read().decode("utf-8") if error.fp else ""
         payload = json.loads(raw) if raw else {"ok": False, "message": "Worker error"}
+        payload = _normalize_worker_challenge(payload)
+        _maybe_update_unblock_state(payload)
         return JSONResponse(payload, status_code=error.code)
     except Exception as error:
         return JSONResponse(
@@ -156,7 +207,11 @@ async def api_leclerc_login(payload: LeclercLoginRequest):
             except Exception:
                 detail = {"error": resp.text[:500]}
             raise HTTPException(status_code=503, detail={"error": "worker_error", "detail": detail})
-        return resp.json()
+        data = resp.json()
+        if isinstance(data, dict):
+            data = _normalize_worker_challenge(data)
+            _maybe_update_unblock_state(data)
+        return data
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail={"error": "worker_unreachable", "detail": str(e)})
 
@@ -241,6 +296,15 @@ def leclerc_search_page():
         const response = await fetch(`/api/leclerc/search?q=${{encodeURIComponent(query)}}`);
         const data = await response.json();
         if (!response.ok || !data.ok) {{
+          if (data && (data.message === 'captcha_required' || data.message === '2fa_required')) {{
+            const u = data.unblock_url || '/leclerc/unblock';
+            const stage = data.stage ? ` (${data.stage})` : '';
+            setStatus(
+              `Déblocage requis${stage}. Ouvre <a href="${{u}}" target="_blank" rel="noopener">${{u}}</a> dans le navigateur GUI (5801), valide le challenge, puis relance la recherche.`,
+              true
+            );
+            return;
+          }}
           setStatus(data.message || 'Erreur lors de la recherche', true);
           return;
         }}

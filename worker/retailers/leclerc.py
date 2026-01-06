@@ -182,16 +182,35 @@ class LeclercRetailer:
                 # Capture JSON XHR/fetch (utile si DOM parsing = 0 items)
                 if request.resource_type in ("xhr", "fetch"):
                     ct = (response.headers.get("content-type") or "").lower()
-                    if "application/json" in ct:
-                        # éviter de parser des payloads gigantesques
-                        cl = response.headers.get("content-length")
-                        if cl and cl.isdigit() and int(cl) > 2_500_000:
-                            return
-                        try:
+                    cl = response.headers.get("content-length")
+                    # éviter de parser des payloads gigantesques
+                    if cl and cl.isdigit() and int(cl) > 2_500_000:
+                        return
+
+                    data = None
+                    try:
+                        if "application/json" in ct:
                             data = response.json()
-                            self._xhr_json.append({"url": response.url, "data": data})
-                        except Exception:
-                            pass
+                        else:
+                            # Certains endpoints Leclerc renvoient du JSON avec un content-type surprenant.
+                            # Best-effort: si ça ressemble à du JSON, on tente.
+                            txt = response.text()
+                            if txt:
+                                s = txt.lstrip()
+                                if s.startswith("{") or s.startswith("["):
+                                    data = json.loads(txt)
+                    except Exception:
+                        data = None
+
+                    if isinstance(data, (dict, list)):
+                        self._xhr_json.append(
+                            {
+                                "url": response.url,
+                                "status": response.status,
+                                "content_type": ct,
+                                "data": data,
+                            }
+                        )
             except Exception:
                 self.logger.debug("Failed to capture response", exc_info=True)
 
@@ -356,6 +375,14 @@ class LeclercRetailer:
         base = base.rstrip("/")
         return f"{base}/recherche.aspx?TexteRecherche={quote_plus(query)}"
 
+    def _build_auth_url(self) -> str:
+        base = LECLERC_STORE_URL
+        if base.endswith(".aspx"):
+            base = base[: -len(".aspx")]
+        base = base.rstrip("/")
+        # Leclerc Drive utilise généralement une page Authentification.aspx sous le magasin.
+        return f"{base}/Authentification.aspx"
+
     # --- Parsing DOM (best-effort) ---
 
     def _extract_price(self, text: str) -> tuple[str | None, float | None]:
@@ -411,6 +438,28 @@ class LeclercRetailer:
         except Exception:
             url = None
 
+        # filter_non_product: we only keep internal product-like links
+        if not url:
+            return None
+        if url in ("#", "/") or url.endswith("#"):
+            return None
+        try:
+            parsed_base = urlparse(base_url)
+            parsed_url = urlparse(url)
+            if parsed_url.netloc and parsed_base.netloc and parsed_url.netloc != parsed_base.netloc:
+                return None
+        except Exception:
+            pass
+
+        # Drop obvious non-product UI cards
+        t = (title or "").strip().lower()
+        if not t or t in {"panier"} or "votre première commande" in t or "première commande" in t:
+            return None
+
+        # Price 0.00 is almost always UI, not a product
+        if isinstance(price_value, (int, float)) and float(price_value) == 0.0:
+            return None
+
         return {
             "name": title,
             "price": price_value if price_value is not None else price_text,
@@ -419,50 +468,48 @@ class LeclercRetailer:
             "store": LECLERC_STORE_LABEL,
         }
 
-    def _parse_search_results_dom(self, limit: int, base_url: str) -> list[dict[str, Any]]:
-        # sélecteurs très permissifs + heuristique "contient prix"
-        selectors = [
-            "article",
-            "div",
-            "li",
-        ]
-        locator = self.page.locator(",".join(selectors))
+    def _parse_search_results_dom(self, limit: int, base_url: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Best-effort DOM parsing (fallback). Returns (items, meta).
 
+        Strategy: start from visible price strings (much fewer nodes) then climb to a nearby card container.
+        This avoids scanning thousands of generic <div>/<li> and reduces false positives.
+        """
         items: list[dict[str, Any]] = []
-        count = locator.count()
 
-        # On évite d’itérer sur 20 000 div : on borne
-        max_scan = min(count, 4000)
+        # Locate elements that display a price like "1,23 €"
+        price_nodes = self.page.locator("text=/\\d+[,.]\\d{2}\\s*€/")
+        count = price_nodes.count()
+        max_scan = min(count, 800)
+
+        meta: dict[str, Any] = {
+            "price_nodes_count": count,
+            "max_scan": max_scan,
+            "scanned": 0,
+        }
 
         for index in range(max_scan):
-            card = locator.nth(index)
-            try:
-                # micro-filtre : si le texte ne contient pas "€", skip
-                txt = card.inner_text(timeout=300)
-                if "€" not in txt:
-                    continue
-            except Exception:
-                continue
+            meta["scanned"] = index + 1
+            node = price_nodes.nth(index)
 
+            # nearest "card-like" container
+            card = node.locator("xpath=ancestor-or-self::*[self::article or self::li or self::div][1]")
             item = self._parse_product_card_dom(card, base_url)
             if item:
                 items.append(item)
                 if len(items) >= limit:
                     break
 
-        # petite dédup par (name, price)
+        # Dedup
+        seen: set[tuple[str | None, Any, str | None]] = set()
         dedup: list[dict[str, Any]] = []
-        seen = set()
         for it in items:
-            k = (it.get("name"), it.get("price"))
+            k = (it.get("name"), it.get("price"), it.get("url"))
             if k in seen:
                 continue
             seen.add(k)
             dedup.append(it)
 
-        return dedup[:limit]
-
-    # --- Parsing XHR JSON (fallback) ---
+        return dedup[:limit], meta
 
     def _iter_lists(self, obj: Any) -> Iterable[list[Any]]:
         if isinstance(obj, list):
@@ -478,6 +525,21 @@ class LeclercRetailer:
             return 0
         sample = lst[0]
         keys = {str(k).lower() for k in sample.keys()}
+        # Minimum viability: a product list should usually have BOTH name-ish and price-ish fields.
+        has_price = any(("prix" in k) or ("price" in k) for k in keys)
+        has_name = any(
+            ("libell" in k)
+            or ("name" in k)
+            or ("label" in k)
+            or ("designation" in k)
+            or ("title" in k)
+            or ("nom" in k)
+            or ("produit" in k)
+            for k in keys
+        )
+        if not (has_price and has_name):
+            return 0
+
         score = 0
         for k in keys:
             if "prix" in k or "price" in k:
@@ -497,28 +559,65 @@ class LeclercRetailer:
                 return d.get(k)
         return None
 
-    def _extract_items_from_xhr(self, limit: int) -> list[dict[str, Any]]:
-        best: list[dict[str, Any]] = []
+    def _extract_items_from_xhr(self, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Best-effort extraction of product items from captured XHR/fetch JSON payloads."""
+        items: list[dict[str, Any]] = []
+        meta: dict[str, Any] = {
+            "captured": len(self._xhr_json),
+            "candidates": 0,
+            "best_score": 0,
+            "best_source_url": None,
+        }
+
+        def _normalize_price(value: Any) -> float | str | None:
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, dict):
+                for k in ("value", "valeur", "montant", "amount", "prix"):
+                    if k in value and value[k] is not None:
+                        return _normalize_price(value[k])
+                return None
+            if isinstance(value, str):
+                s = value.strip()
+                # "1,23" or "1.23" or "1,23 €"
+                m = re.search(r"(\d+[\.,]\d{2})", s)
+                if m:
+                    try:
+                        return float(m.group(1).replace(",", "."))
+                    except Exception:
+                        pass
+                return s[:40] if s else None
+            return None
 
         # On parcourt les JSON capturés et on cherche la "meilleure" liste de produits
-        candidates: list[list[Any]] = []
+        candidates: list[tuple[list[Any], str]] = []
         for payload in self._xhr_json:
             data = payload.get("data")
+            src = payload.get("url") or ""
             for lst in self._iter_lists(data):
                 if lst and isinstance(lst[0], dict):
-                    candidates.append(lst)
+                    candidates.append((lst, src))
+
+        meta["candidates"] = len(candidates)
 
         # choisir la meilleure liste
         best_lst: list[Any] | None = None
         best_score = 0
-        for lst in candidates:
+        best_src = None
+        for lst, src in candidates:
             s = self._score_candidate_list(lst)
             if s > best_score:
                 best_score = s
                 best_lst = lst
+                best_src = src
+
+        meta["best_score"] = best_score
+        meta["best_source_url"] = best_src
 
         if not best_lst:
-            return best
+            return items, meta
 
         parsed = urlparse(LECLERC_STORE_URL)
         base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
@@ -538,24 +637,48 @@ class LeclercRetailer:
                 name = name[0] if name else None
             name = str(name).strip() if name else None
 
-            price = self._extract_first(
+            price_raw = self._extract_first(
                 prod,
-                ["prix", "prixttc", "price", "pricevalue", "montant", "amount"],
+                [
+                    "prix",
+                    "prixttc",
+                    "price",
+                    "pricevalue",
+                    "price_value",
+                    "montant",
+                    "amount",
+                    "valeur",
+                    "value",
+                ],
             )
+            price = _normalize_price(price_raw)
 
             unit_price = self._extract_first(
                 prod,
-                ["prixunitaire", "unitprice", "prix_unitaire", "unit_price"],
+                ["prixunitaire", "unitprice", "prix_unitaire", "unit_price", "unitPrice", "prixUnitaire"],
             )
 
-            url = self._extract_first(prod, ["url", "href", "link"])
+            url = self._extract_first(
+                prod,
+                [
+                    "url",
+                    "href",
+                    "link",
+                    "producturl",
+                    "product_url",
+                    "urlproduit",
+                    "url_produit",
+                    "deeplink",
+                    "productLink",
+                ],
+            )
             if url and isinstance(url, str) and not url.startswith("http"):
                 url = f"{base_url}{url}"
 
             if not name or price is None:
                 continue
 
-            best.append(
+            items.append(
                 {
                     "name": name[:200],
                     "price": price,
@@ -564,10 +687,20 @@ class LeclercRetailer:
                     "store": LECLERC_STORE_LABEL,
                 }
             )
-            if len(best) >= limit:
+            if len(items) >= limit:
                 break
 
-        return best
+        # Dédup simple
+        dedup: list[dict[str, Any]] = []
+        seen = set()
+        for it in items:
+            k = (it.get("name"), it.get("price"))
+            if k in seen:
+                continue
+            seen.add(k)
+            dedup.append(it)
+
+        return dedup[:limit], meta
 
     # --- API publique ---
 
@@ -576,7 +709,7 @@ class LeclercRetailer:
         *,
         email: str,
         password: str,
-        auth_url: str,
+        auth_url: str | None,
         verify_url: str | None = None,
         save_storage_state: bool = True,
     ) -> dict[str, Any]:
@@ -586,6 +719,7 @@ class LeclercRetailer:
         - Ne tente PAS de bypass captcha.
         """
         self.page.set_default_timeout(DEFAULT_TIMEOUT_MS)
+        auth_url = (auth_url or "").strip() or self._build_auth_url()
         self._start_network_capture()
         try:
             self.page.goto(auth_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
@@ -736,7 +870,6 @@ class LeclercRetailer:
         self.page.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
         start = time.monotonic()
-        block_attempts = 0
 
         self._start_network_capture()
         try:
@@ -753,32 +886,71 @@ class LeclercRetailer:
             self._wait_quiet()
             self._raise_if_challenge("search")
 
+            if os.getenv("ALWAYS_CAPTURE_ARTIFACTS", "0") == "1":
+                self._capture_artifacts("search_loaded")
+
             # parsing
             parsed = urlparse(LECLERC_STORE_URL)
             base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else LECLERC_STORE_URL
 
-            items = self._parse_search_results_dom(limit, base_url)
+            # Parsing (XHR-first, DOM fallback)
+            xhr_items, xhr_meta = self._extract_items_from_xhr(limit)
+            dom_meta: dict[str, Any] = {}
+            parse_mode = "xhr" if xhr_items else None
 
-            # fallback XHR JSON
-            if not items:
-                items = self._extract_items_from_xhr(limit)
-
-            # retry blocage si jamais
-            if not items and block_attempts < MAX_BLOCK_RETRIES:
-                block_attempts += 1
+            if xhr_items:
+                items = xhr_items
+            else:
+                dom_items, dom_meta = self._parse_search_results_dom(limit, base_url)
+                items = dom_items
+                parse_mode = "dom" if items else "none"
 
             debug: dict[str, Any] = {
                 "final_url": self.page.url,
                 "page_title": None,
                 "timing_ms": int((time.monotonic() - start) * 1000),
+                "parse_mode": parse_mode,
+                "xhr": xhr_meta,
+                "dom": dom_meta,
             }
             try:
                 debug["page_title"] = self.page.title()
             except Exception:
                 debug["page_title"] = None
 
-            if not items:
-                debug.update(self._capture_artifacts("noresults"))
+            if ALWAYS_CAPTURE_ARTIFACTS or not items:
+                debug.update(self._capture_artifacts("search" if items else "noresults"))
+
+            # Toujours écrire au moins un meta.json pour faciliter le debug (même si items != 0)
+            try:
+                meta_path = self.log_dir / f"leclerc_search_meta_{self._timestamp()}.json"
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "query": query,
+                            "limit": limit,
+                            "count": len(items),
+                            "debug": debug,
+                            "items_preview": items[: min(len(items), 3)],
+                            "xhr_summary": [
+                                {
+                                    "url": p.get("url"),
+                                    "status": p.get("status"),
+                                    "content_type": p.get("content_type"),
+                                    "top_keys": list(p.get("data").keys())[:20] if isinstance(p.get("data"), dict) else None,
+                                }
+                                for p in (self._xhr_json[:50])
+                            ],
+                            "network_entries_count": len(self._network_entries),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                debug["meta"] = str(meta_path)
+            except Exception:
+                pass
 
             return SearchResult(items=items, debug=debug)
 

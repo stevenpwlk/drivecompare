@@ -65,8 +65,20 @@ class HealthHandler(BaseHTTPRequestHandler):
             retailer, _page, jid = _leclerc()
             res = retailer.search(query=query, limit=limit)
 
-            items = getattr(res, "items", []) or []
-            debug = getattr(res, "debug", {}) or {}
+            # The retailer may return either a SearchResult-like object or a plain dict.
+            # Be explicit to avoid traps like dict.items (method) vs {"items": ...} (key).
+            if isinstance(res, dict):
+                items = res.get("items") or []
+                debug = res.get("debug") or {}
+            else:
+                items = getattr(res, "items", []) or []
+                debug = getattr(res, "debug", {}) or {}
+
+            if not isinstance(items, list):
+                debug = dict(debug or {})
+                debug["warning"] = "items_not_a_list"
+                debug["items_type"] = str(type(items))
+                items = []
             self._json(200, {"ok": True, "query": query, "count": len(items), "items": items, "debug": debug, "job_id": jid})
 
         except CaptchaRequired as e:
@@ -79,6 +91,7 @@ class HealthHandler(BaseHTTPRequestHandler):
       	   	    "blocked_url": e.blocked_url,
         	    "unblock_url": e.unblock_url,
  	            "artifacts": e.artifacts,
+	            "job_id": jid,
                 },
             )
         except Exception as e:
@@ -125,6 +138,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "unblock_url": e.unblock_url,
                     "stage": getattr(e, "stage", None),
                     "artifacts": getattr(e, "artifacts", None),
+                    "job_id": jid,
                 },
             )
         except Exception as e:
